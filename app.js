@@ -80,7 +80,28 @@ const DEFAULT_PRIO = [
   E(63, 'Ceppaloni zona industriale e Appia', 'ceppaloni', '', 'Case sparse', []),
   E(64, 'Roccabascerana', 'roccabascerana', '', 'Zolli (via Vittorio Veneto)', ['zolli', 'vittorio veneto']),
   E(65, 'Roccabascerana', 'roccabascerana', '', 'Squillani, via Cotugno, via Girolamo del Balzo, via Cantone', ['squillani', 'cotugno', 'girolamo del balzo', 'cantone']),
-  E(66, 'Roccabascerana', 'roccabascerana', '', 'Via Severini, via Guerrere, via Vernilli', ['severini', 'guerrere', 'vernilli'])
+  E(66, 'Roccabascerana', 'roccabascerana', '', 'Via Severini, via Guerrere, via Vernilli', ['severini', 'guerrere', 'vernilli']),
+  E(67, 'Cassano (Roccabascerana)', 'roccabascerana', '', 'Via Giordano Bruno dal 231 al 225, via Cafari', ['giordano bruno@225-231', 'cafari']),
+  E(68, 'Cassano (Roccabascerana)', 'roccabascerana', '', 'Via Giordano Bruno, via Arnaldo da Brescia', ['giordano bruno', 'arnaldo da brescia']),
+  E(69, 'Cassano (Roccabascerana)', 'roccabascerana', '', 'Via Caselle, via Principi', ['caselle', 'principi']),
+  E(70, 'Cassano (Roccabascerana)', 'roccabascerana', '', 'Via Bottilli', ['bottilli']),
+  E(71, 'Tuoro (Roccabascerana)', 'roccabascerana', '', 'Via Termiti, via Piantedosi, piazza Covino, via Masiello', ['termiti', 'piantedosi', 'covino', 'masiello']),
+  E(72, 'Tuoro (Roccabascerana)', 'roccabascerana', '', 'Via Fontana, via Campi', ['fontana', 'campi']),
+  E(73, 'Rocca paese', 'roccabascerana', '', 'Piazza Imbriani, parco San Giorgio, via Marmora', ['imbriani', 'parco san giorgio', 'marmora']),
+  E(74, 'Rocca paese', 'roccabascerana', '', 'Via Roma, via Orsini', ['roma', 'orsini']),
+  E(75, 'Rocca paese', 'roccabascerana', '', 'Via Miranda fino al 81, via Alvaneta, via Santoro', ['miranda@1-81', 'alvaneta', 'santoro']),
+  E(76, 'Rocca paese', 'roccabascerana', '', 'Via Miranda fino al 101', ['miranda@82-101']),
+  E(77, 'Pannarano', 'pannarano', '', 'Via Irpinia fino al 27', ['irpinia@1-27']),
+  E(78, 'Pannarano', 'pannarano', '', 'Via Piano, via Papa Giovanni 23, via Rampe Fontana 7-10', ['piano', 'papa giovanni@23-23', 'rampe fontana@7-10']),
+  E(79, 'Pannarano', 'pannarano', '', 'Via Municipio fino al 46, via Torre, via Antonio Dalessio 1-2', ['municipio@1-46', 'torre', 'dalessio@1-2']),
+  E(80, 'Pannarano', 'pannarano', '', 'Piazza dei Martiri, via Indipendenza fino al 89, via Vico Torre', ['martiri', 'indipendenza@1-89', 'vico torre']),
+  E(81, 'Pannarano', 'pannarano', '', 'Via Valle, via Dalessio, via Campetiello, via Vigne Vecchie fino al 10', ['valle', 'dalessio', 'campetiello', 'vigne vecchie@1-10']),
+  E(82, 'Pannarano', 'pannarano', '', 'Via Aqualta, via Santa Maria, piazza Eugenio Dalessio', ['aqualta', 'santa maria', 'eugenio dalessio']),
+  E(83, 'Pannarano', 'pannarano', '', 'Via Selvetelle Pezze, via Franchi Pezze fino al 15 (poi tornare indietro)', ['selvetelle pezze', 'franchi pezze@1-15', 'pezze']),
+  E(84, 'Pannarano', 'pannarano', '', 'Via Selvetelle, via Ponte, via Indipendenza numeri alti fino al 157, largo Taverna', ['selvetelle', 'ponte', 'indipendenza@90-157', 'taverna']),
+  E(85, 'Pannarano', 'pannarano', '', 'Via Pietrastornina', ['pietrastornina']),
+  E(86, 'Pannarano', 'pannarano', '', 'Via Sorbo San Pietro, via Cerreto, via Rampe Fontana 32, via Giacchini', ['sorbo san pietro', 'cerreto', 'rampe fontana@32-32', 'giacchini']),
+  E(87, 'Pannarano', 'pannarano', '', 'Via Irpinia dal 29 al 80, via San Nicola, via Vigne Vecchie 13, via Conti', ['irpinia@29-80', 'san nicola', 'vigne vecchie@13-13', 'conti'])
 ];
 
 /* ---------- stato ---------- */
@@ -102,7 +123,7 @@ function normStreet(s) {
   while (t.length > 1 && TYPE_WORDS.has(t[0])) t.shift();
   return t.join(' ');
 }
-const KNOWN_COM = ['ceppaloni', 'apollosa', 'arpaise', 'san leucio', 'roccabascerana', 'bucciano', 'sant angelo a cupolo', 'montesarchio'];
+const KNOWN_COM = ['ceppaloni', 'apollosa', 'arpaise', 'san leucio', 'roccabascerana', 'pannarano', 'bucciano', 'sant angelo a cupolo', 'montesarchio'];
 function normCom(c) {
   const n = norm(c); const m = n.match(/^.+? di (.+)$/);
   if (m && KNOWN_COM.some(k => m[1].startsWith(k))) return m[1];
