@@ -416,15 +416,18 @@ async function startMove(id) {
   moving = { p, m };
   const tb = $('#topbar'); tb.style.display = 'block';
   tb.innerHTML = '<b>' + esc(fmtAddr(p)) + '</b><div style="font-size:13px;color:#51627d">Trascina il pin (o tocca la mappa). Non vedi la via? Cercala:</div>' +
-    '<div class="row" style="margin:6px 0"><input id="mvQ" placeholder="Cerca via o luogo…" value="' + esc(p.via) + '"><button class="btn sm" id="mvG" style="flex:.45">Cerca</button></div><div class="row" style="margin:4px 0"><a class="btn sec sm" style="text-decoration:none;text-align:center" target="_blank" href="https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(fmtAddr(p) + ', Italia') + '">Cerca su Google Maps</a><button class="btn sec sm" id="mvP">Incolla coordinate/link</button></div><div id="mvR" style="max-height:30vh;overflow:auto"></div>' +
+    '<div class="row" style="margin:6px 0"><input id="mvQ" placeholder="Cerca via o luogo…" value="' + esc(p.via) + '"><button class="btn sm" id="mvG" style="flex:.45">Cerca</button></div><div class="row" style="margin:4px 0"><a class="btn sec sm" style="text-decoration:none;text-align:center" target="_blank" href="https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(fmtAddr(p) + ', Italia') + '">Cerca su Google Maps</a><button class="btn sec sm" id="mvP">Incolla coordinate/link</button></div><div class="row" style="margin:4px 0"><button class="btn sec sm" id="mvMe">📍 Usa la mia posizione</button></div><div id="mvR" style="max-height:30vh;overflow:auto"></div>' +
     '<div class="row"><button class="btn sec sm" id="mvC">Annulla</button><button class="btn ok sm" id="mvS">Salva</button></div>';
   const doSearch = async () => {
-    const q = $('#mvQ').value.trim(); if (!q) return; const box = $('#mvR'); box.innerHTML = '<div class="s" style="padding:6px">Cerco…</div>';
+    const q = $('#mvQ').value.trim(); if (!q) return; const box = $('#mvR');
+    const cc0 = parseCoords(q);
+    if (cc0) { m.setLatLng(cc0); map.setView(cc0, 19); box.innerHTML = '<div class="s" style="padding:6px">📍 Pin spostato su ' + cc0[0].toFixed(6) + ', ' + cc0[1].toFixed(6) + '. Controlla e premi Salva.</div>'; return; } box.innerHTML = '<div class="s" style="padding:6px">Cerco…</div>';
     const res = await searchPlaces(q, p);
     box.innerHTML = res.length ? res.map((r, i) => '<div class="it" data-i="' + i + '" style="padding:8px;border-bottom:1px solid #dde3ec"><div class="x"><b style="font-size:14px;white-space:normal">' + esc(r.label) + '</b><span>' + (r.src === 'db' ? 'dal database' : r.src === 'gps' ? 'da Google Maps / GPS' : r.src === 'info' ? '' : 'online') + '</span></div></div>').join('') : '<div class="s" style="padding:6px">Nessun risultato' + (navigator.onLine ? '' : ' (senza rete cerco solo nel database)') + '</div>';
     box.querySelectorAll('[data-i]').forEach(el => el.onclick = () => { const r = res[+el.dataset.i]; if (r.lat == null) return; m.setLatLng([r.lat, r.lng]); map.setView([r.lat, r.lng], 18); box.innerHTML = ''; });
   };
   $('#mvP').onclick = async () => { try { const t = await navigator.clipboard.readText(); $('#mvQ').value = t; doSearch(); } catch (e) { toast('Incolla a mano nel campo di ricerca (tieni premuto → Incolla)'); } };
+  $('#mvMe').onclick = () => { if (!meMarker) return toast('GPS non ancora attivo: premi il tasto Io e aspetta il punto blu', 4000); const ll = meMarker.getLatLng(); m.setLatLng(ll); map.setView(ll, 19); toast('Pin portato sulla tua posizione: premi Salva', 3500); };
   $('#mvG').onclick = doSearch; $('#mvQ').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
   moving.h = e => { if (moving) m.setLatLng(e.latlng); }; map.on('click', moving.h);
   $('#mvC').onclick = endMove;
