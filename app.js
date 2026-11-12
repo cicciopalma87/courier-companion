@@ -272,7 +272,14 @@ function setStato(id, st) {
 
 /* ---------- mappa ---------- */
 const map = L.map('map', { zoomControl: false, attributionControl: true }).setView([41.06, 14.74], 12);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, maxNativeZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+const osmLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, maxNativeZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+const satLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, maxNativeZoom: 19, attribution: 'Esri, Maxar, Earthstar Geographics' });
+let satOn = false;
+function toggleSat() {
+  if (!satOn && !navigator.onLine) return toast('Il satellite richiede la rete');
+  satOn = !satOn; if (satOn) { map.addLayer(satLayer); map.removeLayer(osmLayer); } else { map.addLayer(osmLayer); map.removeLayer(satLayer); }
+  $('#bSat').textContent = satOn ? '🗺 Mappa' : '🛰 Satellite';
+}
 L.control.zoom({ position: 'topleft' }).addTo(map);
 const pinLayer = L.layerGroup().addTo(map);
 let meMarker = null, meCircle = null, firstFix = false;
@@ -287,6 +294,7 @@ function startGPS() {
     if (!firstFix) { firstFix = true; if (!DAY.parcels.some(p => p.lat)) map.setView(ll, 14); }
   }, err => { toast('GPS non disponibile: controlla i permessi'); }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
 }
+$('#bSat').onclick = toggleSat;
 $('#bLoc').onclick = () => { if (meMarker) map.setView(meMarker.getLatLng(), Math.max(map.getZoom(), 16)); else toast('Posizione non ancora trovata'); };
 
 function groups() {
@@ -395,14 +403,15 @@ async function startMove(id) {
   moving = { p, m };
   const tb = $('#topbar'); tb.style.display = 'block';
   tb.innerHTML = '<b>' + esc(fmtAddr(p)) + '</b><div style="font-size:13px;color:#51627d">Trascina il pin (o tocca la mappa). Non vedi la via? Cercala:</div>' +
-    '<div class="row" style="margin:6px 0"><input id="mvQ" placeholder="Cerca via o luogo…" value="' + esc(p.via) + '"><button class="btn sm" id="mvG" style="flex:.45">Cerca</button></div><div id="mvR" style="max-height:34vh;overflow:auto"></div>' +
+    '<div class="row" style="margin:6px 0"><input id="mvQ" placeholder="Cerca via o luogo…" value="' + esc(p.via) + '"><button class="btn sm" id="mvG" style="flex:.45">Cerca</button></div><div class="row" style="margin:4px 0"><a class="btn sec sm" style="text-decoration:none;text-align:center" target="_blank" href="https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(fmtAddr(p) + ', Italia') + '">Cerca su Google Maps</a><button class="btn sec sm" id="mvP">Incolla coordinate/link</button></div><div id="mvR" style="max-height:30vh;overflow:auto"></div>' +
     '<div class="row"><button class="btn sec sm" id="mvC">Annulla</button><button class="btn ok sm" id="mvS">Salva</button></div>';
   const doSearch = async () => {
     const q = $('#mvQ').value.trim(); if (!q) return; const box = $('#mvR'); box.innerHTML = '<div class="s" style="padding:6px">Cerco…</div>';
     const res = await searchPlaces(q, p);
-    box.innerHTML = res.length ? res.map((r, i) => '<div class="it" data-i="' + i + '" style="padding:8px;border-bottom:1px solid #dde3ec"><div class="x"><b style="font-size:14px;white-space:normal">' + esc(r.label) + '</b><span>' + (r.src === 'db' ? 'dal database' : 'online') + '</span></div></div>').join('') : '<div class="s" style="padding:6px">Nessun risultato' + (navigator.onLine ? '' : ' (senza rete cerco solo nel database)') + '</div>';
-    box.querySelectorAll('[data-i]').forEach(el => el.onclick = () => { const r = res[+el.dataset.i]; m.setLatLng([r.lat, r.lng]); map.setView([r.lat, r.lng], 18); box.innerHTML = ''; });
+    box.innerHTML = res.length ? res.map((r, i) => '<div class="it" data-i="' + i + '" style="padding:8px;border-bottom:1px solid #dde3ec"><div class="x"><b style="font-size:14px;white-space:normal">' + esc(r.label) + '</b><span>' + (r.src === 'db' ? 'dal database' : r.src === 'gps' ? 'da Google Maps / GPS' : r.src === 'info' ? '' : 'online') + '</span></div></div>').join('') : '<div class="s" style="padding:6px">Nessun risultato' + (navigator.onLine ? '' : ' (senza rete cerco solo nel database)') + '</div>';
+    box.querySelectorAll('[data-i]').forEach(el => el.onclick = () => { const r = res[+el.dataset.i]; if (r.lat == null) return; m.setLatLng([r.lat, r.lng]); map.setView([r.lat, r.lng], 18); box.innerHTML = ''; });
   };
+  $('#mvP').onclick = async () => { try { const t = await navigator.clipboard.readText(); $('#mvQ').value = t; doSearch(); } catch (e) { toast('Incolla a mano nel campo di ricerca (tieni premuto → Incolla)'); } };
   $('#mvG').onclick = doSearch; $('#mvQ').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
   moving.h = e => { if (moving) m.setLatLng(e.latlng); }; map.on('click', moving.h);
   $('#mvC').onclick = endMove;
@@ -447,8 +456,17 @@ async function geocode(p) {
   }
   return null;
 }
+function parseCoords(t) {
+  t = String(t || '').trim(); if (!t) return null;
+  const m = t.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/) || t.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/) || t.match(/[?&](?:q|ll|query|destination|center)=(-?\d+\.\d+)(?:,|%2C)\s*(-?\d+\.\d+)/i) || t.match(/(-?\d{1,2}[.,]\d{3,})\s*[,; ]\s*(-?\d{1,3}[.,]\d{3,})/);
+  if (!m) return null;
+  const la = parseFloat(m[1].replace(',', '.')), lo = parseFloat(m[2].replace(',', '.'));
+  return isFinite(la) && isFinite(lo) && inBox(la, lo) ? [la, lo] : null;
+}
 async function searchPlaces(q, p) {
   const out = [], nq = norm(q);
+  const cc = parseCoords(q); if (cc) { out.push({ label: 'Coordinate incollate: ' + cc[0].toFixed(6) + ', ' + cc[1].toFixed(6), lat: cc[0], lng: cc[1], src: 'gps' }); return out; }
+  if (/(maps\.app\.goo\.gl|goo\.gl\/maps)/i.test(q)) { out.push({ label: 'Link breve di Google Maps: non lo posso aprire. Apri il link in Chrome e incolla qui l\'indirizzo lungo, oppure copia le coordinate (tieni premuto sul punto in Maps).', lat: null, lng: null, src: 'info' }); return out; }
   for (const a of Object.values(DB.addr)) if (a.lat != null && norm(a.via + ' ' + a.civico + ' ' + a.comune).includes(nq)) out.push({ label: (a.via + ' ' + a.civico + ', ' + a.comune).trim(), lat: a.lat, lng: a.lng, src: 'db' });
   if (navigator.onLine) {
     const com = baseComune(p.comune); const hasCom = norm(q).includes(normCom(p.comune));
@@ -818,21 +836,25 @@ function lat2y(lat, z) { const r = lat * Math.PI / 180; return Math.floor((1 - M
 async function downloadTiles() {
   if (!navigator.onLine) return toast('Serve la rete (meglio Wi‑Fi)');
   const boxes = [
-    { n: 41.5, s: 40.7, w: 14.3, e: 15.4, z0: 9, z1: 13 },          // tutta Irpinia e Sannio, fino a livello paese/strade principali
-    { n: 41.2, s: 40.9, w: 14.5, e: 14.9, z0: 14, z1: 15 }           // zona del giro (Atripalda, Valle Caudina, Ceppaloni, Apollosa)
+    { n: 41.5, s: 40.7, w: 14.3, e: 15.4, z0: 9, z1: 13 },          // tutta Irpinia e Sannio: paesi e strade principali
+    { n: 41.2, s: 40.9, w: 14.5, e: 14.9, z0: 14, z1: 15 }          // zona del giro (Atripalda, Valle Caudina, Ceppaloni, Apollosa)
   ];
-  const pts = DAY.parcels.filter(p => p.lat != null).map(p => [p.lat, p.lng]);
-  if (pts.length) { const b = L.latLngBounds(pts).pad(0.1); boxes.push({ n: b.getNorth(), s: b.getSouth(), w: b.getWest(), e: b.getEast(), z0: 14, z1: 16 }); }
   const set = new Set();
   for (const bx of boxes) for (let z = bx.z0; z <= bx.z1; z++) {
     const x0 = lon2x(bx.w, z), x1 = lon2x(bx.e, z), y0 = lat2y(bx.n, z), y1 = lat2y(bx.s, z);
     for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) set.add(z + '/' + x + '/' + y);
   }
+  // massimo dettaglio (livelli 16-18) intorno a ogni pacco e agli indirizzi già nel database
+  const pins = DAY.parcels.filter(p => p.lat != null).map(p => [p.lat, p.lng]).concat(Object.values(DB.addr).filter(a => a.lat != null).map(a => [a.lat, a.lng]));
+  for (const [la, lo] of pins) for (const z of [16, 17, 18]) {
+    const r = z === 18 ? 1 : 2, cx = lon2x(lo, z), cy = lat2y(la, z);
+    for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) set.add(z + '/' + (cx + dx) + '/' + (cy + dy));
+  }
   const c = await caches.open('tiles-v1');
   const todo = [];
   for (const t of set) { const url = 'https://tile.openstreetmap.org/' + t + '.png'; if (!(await c.match(url))) todo.push(url); }
   if (!todo.length) return toast('Mappa già scaricata');
-  if (!confirm('Scarico ' + todo.length + ' tessere (circa ' + Math.round(todo.length * 0.018) + ' MB): tutta Irpinia e Sannio (paesi e strade principali), più il dettaglio nella zona del giro e al massimo dettaglio dove hai i pacchi. Meglio con il Wi‑Fi. Procedo?')) return;
+  if (!confirm('Scarico ' + todo.length + ' tessere (circa ' + Math.round(todo.length * 0.018) + ' MB): tutta Irpinia e Sannio, il giro in dettaglio e il massimo dettaglio intorno ai tuoi pacchi e agli indirizzi nel database. Meglio con il Wi‑Fi. Procedo?')) return;
   const total = todo.length; let done = 0, fail = 0;
   async function worker() {
     while (todo.length) {
