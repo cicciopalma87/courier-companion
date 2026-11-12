@@ -321,7 +321,17 @@ function fitPins() {
   const pts = DAY.parcels.filter(p => p.lat != null).map(p => [p.lat, p.lng]);
   if (pts.length) map.fitBounds(pts, { padding: [30, 30], maxZoom: 15 });
 }
-function navUrl(lat, lng) { return 'https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=' + lat + ',' + lng; }
+let NAV = lsGet('sda.nav', 'google');
+function navUrl(lat, lng, name) {
+  const nm = encodeURIComponent(name || 'Destinazione');
+  if (NAV === 'organic') {
+    if (meMarker) { const m = meMarker.getLatLng(); return 'om://route?sll=' + m.lat + ',' + m.lng + '&saddr=' + encodeURIComponent('Posizione attuale') + '&dll=' + lat + ',' + lng + '&daddr=' + nm + '&type=vehicle'; }
+    return 'om://map?v=1&ll=' + lat + ',' + lng + '&n=' + nm;
+  }
+  if (NAV === 'geo') return 'geo:' + lat + ',' + lng + '?q=' + lat + ',' + lng + '(' + nm + ')';
+  return 'https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=' + lat + ',' + lng;
+}
+const NAV_LABEL = { google: 'Google Maps', organic: 'Organic Maps', geo: 'Scegli ogni volta (Android)' };
 function waUrl(tel) {
   let d = String(tel || '').replace(/[^\d+]/g, ''); if (d.startsWith('+')) d = d.slice(1); else if (d.startsWith('00')) d = d.slice(2); else if (!d.startsWith('39')) d = '39' + d;
   return 'https://wa.me/' + d + '?text=' + encodeURIComponent(WA);
@@ -343,7 +353,7 @@ function parcelCard(p) {
 function openGroup(ids) {
   const ps = ids.map(id => DAY.parcels.find(p => p.id === id)).filter(Boolean); if (!ps.length) return closeSheet();
   const p0 = ps[0];
-  const nav = p0.lat != null ? '<a class="btn" style="display:block;text-align:center;text-decoration:none;margin-bottom:6px" target="_blank" href="' + navUrl(p0.lat, p0.lng) + '">➜ Naviga</a>' : '<button class="btn warn" data-a="place" data-id="' + p0.id + '" style="width:100%">Posiziona sulla mappa</button>';
+  const nav = p0.lat != null ? '<a class="btn" style="display:block;text-align:center;text-decoration:none;margin-bottom:6px"' + (NAV === 'google' ? ' target="_blank"' : '') + ' href="' + navUrl(p0.lat, p0.lng, fmtAddr(p0)) + '">➜ Naviga (' + NAV_LABEL[NAV].split(' (')[0] + ')</a>' : '<button class="btn warn" data-a="place" data-id="' + p0.id + '" style="width:100%">Posiziona sulla mappa</button>';
   sheet('<h3>' + esc(p0.via + ' ' + (p0.civico || '')) + '</h3>' + nav + ps.map(parcelCard).join('') + '<button class="btn sec" style="width:100%" data-a="close">Chiudi</button>');
   const root = $('#sheet');
   root.querySelectorAll('[data-a]').forEach(b => b.onclick = ev => {
@@ -718,6 +728,7 @@ function renderMenu() {
     '<button class="btn sec" id="m_pr">Editor priorità</button>' +
     '<button class="btn sec" id="m_tl">Scarica mappa Irpinia e Sannio (Wi‑Fi)</button>' +
     '<button class="btn sec" id="m_wk">Schermo sempre acceso: ' + (wake ? 'sì' : 'no') + '</button>' +
+    '<button class="btn sec" id="m_nav">Navigazione con: ' + NAV_LABEL[NAV] + '</button>' +
     '<button class="btn sec" id="m_wa">Messaggio WhatsApp</button>' +
     '<button class="btn warn" id="m_fine">Fine lavoro</button>' +
     '<small>Versione ' + VER + '</small></div>';
@@ -728,6 +739,7 @@ function renderMenu() {
   $('#m_pr').onclick = prioEditor;
   $('#m_tl').onclick = downloadTiles;
   $('#m_wk').onclick = toggleWake;
+  $('#m_nav').onclick = () => { NAV = { google: 'organic', organic: 'geo', geo: 'google' }[NAV]; lsSet('sda.nav', NAV); renderMenu(); toast('Il tasto Naviga ora usa: ' + NAV_LABEL[NAV], 3500); };
   $('#m_wa').onclick = waEditor;
   $('#m_fine').onclick = fineLavoro;
 }
@@ -848,17 +860,23 @@ async function downloadTiles() {
     const x0 = lon2x(bx.w, z), x1 = lon2x(bx.e, z), y0 = lat2y(bx.n, z), y1 = lat2y(bx.s, z);
     for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) set.add(z + '/' + x + '/' + y);
   }
-  // pacchi e indirizzi del database fuori da quella zona: dettaglio intorno al punto
-  const pins = DAY.parcels.filter(p => p.lat != null).map(p => [p.lat, p.lng]).concat(Object.values(DB.addr).filter(a => a.lat != null).map(a => [a.lat, a.lng]));
-  for (const [la, lo] of pins) for (const z of [16, 17]) {
-    const cx = lon2x(lo, z), cy = lat2y(la, z);
-    for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) set.add(z + '/' + (cx + dx) + '/' + (cy + dy));
+  // corridoio di attraversamento da Atripalda (nomi delle vie visibili anche se ti chiedono di portare il pacco altrove)
+  const extra = [{ n: 40.98, s: 40.89, w: 14.76, e: 14.88 }];
+  // tutti i comuni dove hai pacchi o indirizzi nel database: area intorno ai loro punti, livello 16-17
+  const byCom = {};
+  const addPt = (com, la, lo) => { const k = normCom(com) || '?'; const b = byCom[k] || (byCom[k] = { n: -90, s: 90, w: 180, e: -180 }); b.n = Math.max(b.n, la); b.s = Math.min(b.s, la); b.w = Math.min(b.w, lo); b.e = Math.max(b.e, lo); };
+  DAY.parcels.filter(p => p.lat != null).forEach(p => addPt(p.comune, p.lat, p.lng));
+  Object.values(DB.addr).filter(a => a.lat != null).forEach(a => addPt(a.comune, a.lat, a.lng));
+  for (const k in byCom) { const b = byCom[k], pad = 0.012; extra.push({ n: b.n + pad, s: b.s - pad, w: b.w - pad, e: b.e + pad }); }
+  for (const bx of extra) for (const z of [16, 17]) {
+    const x0 = lon2x(bx.w, z), x1 = lon2x(bx.e, z), y0 = lat2y(bx.n, z), y1 = lat2y(bx.s, z);
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) set.add(z + '/' + x + '/' + y);
   }
   const c = await caches.open('tiles-v1');
   const todo = [];
   for (const t of set) { const url = 'https://tile.openstreetmap.org/' + t + '.png'; if (!(await c.match(url))) todo.push(url); }
   if (!todo.length) return toast('Mappa già scaricata');
-  if (!confirm('Scarico ' + todo.length + ' tessere (circa ' + Math.round(todo.length * 0.015) + ' MB, ' + Math.round(todo.length / 14 / 60) + '–' + Math.round(todo.length / 8 / 60) + ' minuti): tutta Irpinia e Sannio e, per i tuoi paesi, tutte le stradine. Serve il Wi‑Fi e la batteria carica. Se ti interrompi, riprende da dove era arrivato. Procedo?')) return;
+  if (!confirm('Scarico ' + todo.length + ' tessere (circa ' + Math.round(todo.length * 0.015) + ' MB, ' + Math.round(todo.length / 14 / 60) + '–' + Math.round(todo.length / 8 / 60) + ' minuti): tutta Irpinia e Sannio e, per i tuoi paesi e per la strada da Atripalda, tutte le stradine. Serve il Wi‑Fi e la batteria carica. Se ti interrompi, riprende da dove era arrivato. Procedo?')) return;
   const total = todo.length; let done = 0, fail = 0; dlStop = false;
   const msg = () => 'Scarico la mappa… ' + Math.round(done / total * 100) + '%<br><small>' + done + ' / ' + total + ' · errori ' + fail + '</small><br><button class="btn warn sm" id="dlStop" style="margin-top:16px">Interrompi</button>';
   async function worker() {
