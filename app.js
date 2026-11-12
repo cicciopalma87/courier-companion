@@ -272,7 +272,7 @@ function setStato(id, st) {
 
 /* ---------- mappa ---------- */
 const map = L.map('map', { zoomControl: false, attributionControl: true }).setView([41.06, 14.74], 12);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, maxNativeZoom: 18, attribution: '© OpenStreetMap' }).addTo(map);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, maxNativeZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
 L.control.zoom({ position: 'topleft' }).addTo(map);
 const pinLayer = L.layerGroup().addTo(map);
 let meMarker = null, meCircle = null, firstFix = false;
@@ -388,13 +388,22 @@ async function startMove(id) {
   if (p.lat != null) { start = [p.lat, p.lng]; map.setView(start, Math.max(map.getZoom(), 17)); }
   else {
     let g = guessCenter(p); if (!g && navigator.onLine) { busy('Cerco ' + baseComune(p.comune) + '…'); g = await fetchComuneCenter(p); busy(); }
-    if (g) { start = g; map.setView(g, 16); toast('Parti da ' + baseComune(p.comune) + ': trascina il pin sul punto giusto', 4000); }
+    if (g) { start = g; map.setView(g, 16); toast('Indirizzo non trovato da solo: usa Cerca via… oppure trascina il pin', 5000); }
     else start = [map.getCenter().lat, map.getCenter().lng];
   }
   const m = L.marker(start, { draggable: true, icon: L.divIcon({ className: '', html: '<div class="pin st-x" style="width:36px;height:36px">⊕</div>', iconSize: [36, 36], iconAnchor: [18, 18] }), zIndexOffset: 2000 }).addTo(map);
   moving = { p, m };
   const tb = $('#topbar'); tb.style.display = 'block';
-  tb.innerHTML = '<b>' + esc(fmtAddr(p)) + '</b><div style="font-size:13px;color:#51627d">Trascina il segnaposto sul punto giusto (tocca la mappa per spostarlo)</div><div class="row"><button class="btn sec sm" id="mvC">Annulla</button><button class="btn ok sm" id="mvS">Salva</button></div>';
+  tb.innerHTML = '<b>' + esc(fmtAddr(p)) + '</b><div style="font-size:13px;color:#51627d">Trascina il pin (o tocca la mappa). Non vedi la via? Cercala:</div>' +
+    '<div class="row" style="margin:6px 0"><input id="mvQ" placeholder="Cerca via o luogo…" value="' + esc(p.via) + '"><button class="btn sm" id="mvG" style="flex:.45">Cerca</button></div><div id="mvR" style="max-height:34vh;overflow:auto"></div>' +
+    '<div class="row"><button class="btn sec sm" id="mvC">Annulla</button><button class="btn ok sm" id="mvS">Salva</button></div>';
+  const doSearch = async () => {
+    const q = $('#mvQ').value.trim(); if (!q) return; const box = $('#mvR'); box.innerHTML = '<div class="s" style="padding:6px">Cerco…</div>';
+    const res = await searchPlaces(q, p);
+    box.innerHTML = res.length ? res.map((r, i) => '<div class="it" data-i="' + i + '" style="padding:8px;border-bottom:1px solid #dde3ec"><div class="x"><b style="font-size:14px;white-space:normal">' + esc(r.label) + '</b><span>' + (r.src === 'db' ? 'dal database' : 'online') + '</span></div></div>').join('') : '<div class="s" style="padding:6px">Nessun risultato' + (navigator.onLine ? '' : ' (senza rete cerco solo nel database)') + '</div>';
+    box.querySelectorAll('[data-i]').forEach(el => el.onclick = () => { const r = res[+el.dataset.i]; m.setLatLng([r.lat, r.lng]); map.setView([r.lat, r.lng], 18); box.innerHTML = ''; });
+  };
+  $('#mvG').onclick = doSearch; $('#mvQ').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
   moving.h = e => { if (moving) m.setLatLng(e.latlng); }; map.on('click', moving.h);
   $('#mvC').onclick = endMove;
   $('#mvS').onclick = () => {
@@ -418,15 +427,36 @@ function placeMatches(item, com) {
   const a = item.address || {};
   return [a.town, a.city, a.village, a.municipality, a.hamlet, a.suburb].filter(Boolean).map(norm).some(n => n.includes(com) || com.includes(n));
 }
+const ADMIN_TYPES = new Set(['city', 'town', 'village', 'hamlet', 'suburb', 'municipality', 'quarter', 'neighbourhood', 'county', 'state', 'region', 'locality', 'administrative']);
+function validHit(it, com) {
+  if (!inBox(+it.lat, +it.lon)) return false;
+  if (it.class === 'boundary' || (it.class === 'place' && ADMIN_TYPES.has(it.type))) return false;
+  return placeMatches(it, com);
+}
 async function geocode(p) {
-  const com = normCom(p.comune), city = encodeURIComponent(baseComune(p.comune));
-  const civ = p.civico && !/^s\.?n\.?c\.?$/i.test(p.civico) ? p.civico.trim() + ' ' : '';
-  try {
-    let j = await nominatim('street=' + encodeURIComponent(civ + p.via) + '&city=' + city);
-    let h = j.find(it => inBox(+it.lat, +it.lon) && placeMatches(it, com)); if (h) return [+h.lat, +h.lon, 'exact'];
-    if (civ) { await sleep(1100); j = await nominatim('street=' + encodeURIComponent(p.via) + '&city=' + city); h = j.find(it => inBox(+it.lat, +it.lon) && placeMatches(it, com)); if (h) return [+h.lat, +h.lon, 'street']; }
-  } catch (e) { }
+  const com = normCom(p.comune), cname = baseComune(p.comune);
+  const civ = p.civico && !/^s\.?n\.?c\.?$/i.test(p.civico) ? p.civico.trim() : '';
+  const tries = [
+    () => nominatim('q=' + encodeURIComponent(p.via + ' ' + civ + ', ' + cname + ', Italia')),
+    () => nominatim('street=' + encodeURIComponent((civ ? civ + ' ' : '') + p.via) + '&city=' + encodeURIComponent(cname)),
+    () => nominatim('q=' + encodeURIComponent(p.via + ', ' + cname + ', Italia'))
+  ];
+  for (let i = 0; i < tries.length; i++) {
+    try { const j = await tries[i](); const h = j.find(it => validHit(it, com)); if (h) return [+h.lat, +h.lon, (h.class === 'building' || h.type === 'house') ? 'exact' : 'street']; } catch (e) { }
+    await sleep(1100);
+  }
   return null;
+}
+async function searchPlaces(q, p) {
+  const out = [], nq = norm(q);
+  for (const a of Object.values(DB.addr)) if (a.lat != null && norm(a.via + ' ' + a.civico + ' ' + a.comune).includes(nq)) out.push({ label: (a.via + ' ' + a.civico + ', ' + a.comune).trim(), lat: a.lat, lng: a.lng, src: 'db' });
+  if (navigator.onLine) {
+    const com = baseComune(p.comune); const hasCom = norm(q).includes(normCom(p.comune));
+    const add = j => { for (const it of j) { if (!inBox(+it.lat, +it.lon) || (it.class === 'boundary')) continue; const lab = String(it.display_name || '').split(',').slice(0, 3).join(',').trim(); if (!out.some(o => Math.abs(o.lat - it.lat) < 1e-5 && Math.abs(o.lng - it.lon) < 1e-5)) out.push({ label: lab, lat: +it.lat, lng: +it.lon, src: 'osm' }); } };
+    try { add(await nominatim('q=' + encodeURIComponent(hasCom ? q : q + ', ' + com + ', Italia'))); } catch (e) { }
+    if (out.filter(o => o.src === 'osm').length === 0) { try { add(await nominatim('viewbox=14.3,41.4,15.2,40.7&bounded=1&q=' + encodeURIComponent(q))); } catch (e) { } }
+  }
+  return out.slice(0, 8);
 }
 const CC_FALLBACK = { 'ceppaloni': [41.0553, 14.7347], 'san leucio': [41.0647, 14.7519], 'apollosa': [41.085, 14.700] };
 function guessCenter(p) {
@@ -515,16 +545,16 @@ function renderList() {
   const chips = ['tutti', 'da fare', 'fatti', 'ritiri', 'da posizionare'].map(c => '<button class="' + (c === f ? 'on' : '') + '" data-f="' + c + '">' + c + '</button>').join('');
   el.innerHTML = '<div class="chips">' + chips + '</div><div class="list">' + (ps.map(p => '<div class="it" data-id="' + p.id + '"><div class="n ' + stClass(p) + '">' + (p.prio || '?') + '</div><div class="x"><b>' + esc(p.name || '(senza nome)') + '</b><span>' + esc(fmtAddr(p)) + (p.tipo === 'ritiro' ? ' · RITIRO' : '') + (p.lat == null ? ' · da posizionare' : '') + '</span></div><span style="font-size:12px;color:#51627d">' + (p.stato !== 'da_fare' ? '✔' : '') + '</span></div>').join('') || '<div style="padding:24px;text-align:center;color:#51627d">Nessun pacco. Usa lo Scanner, il tasto + oppure Menu → Importa file.</div>') + '</div>' +
     '<div class="legend">Legenda:<span class="st-c"></span>consegna<span class="st-cd"></span>consegnato<span class="st-cn"></span>assente<span class="st-r"></span>ritiro<span class="st-rd"></span>ritirato<span class="st-rn"></span>non ritirato</div>' +
-    '<div class="menu"><button class="btn" id="bEl">Elabora (crea i pin sulla mappa)</button></div>';
+    '<div class="menu"><button class="btn" id="bEl">Elabora (crea i pin sulla mappa)</button><button class="btn no sm" id="bClr">Cancella tutti i pacchi di oggi</button></div>';
   el.querySelectorAll('[data-f]').forEach(b => b.onclick = () => { listFilter = b.dataset.f; renderList(); });
   el.querySelectorAll('.it').forEach(it => it.onclick = () => {
     const p = DAY.parcels.find(x => x.id === +it.dataset.id);
-    showView('map');
-    if (p.lat == null) return startMove(p.id);
-    map.setView([p.lat, p.lng], 17);
+    if (p.lat == null) return openGroup([p.id]);
+    showView('map'); map.setView([p.lat, p.lng], 17);
     const g = groups()[p.lat.toFixed(4) + ',' + p.lng.toFixed(4)] || [p]; openGroup(g.map(x => x.id));
   });
   $('#bEl').onclick = elabora;
+  $('#bClr').onclick = () => { if (DAY.parcels.length && confirm('Cancellare tutti i ' + DAY.parcels.length + ' pacchi di oggi dalla lista? Il database indirizzi resta.')) { DAY.parcels = []; DAY.nextId = 1; touch(); renderPins(); counters(); renderList(); } };
 }
 $('#bNext').onclick = () => {
   const open = DAY.parcels.filter(p => p.stato === 'da_fare' && p.lat != null).sort((a, b) => ((a.prio || 999) - (b.prio || 999)));
