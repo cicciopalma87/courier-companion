@@ -274,6 +274,7 @@ function setStato(id, st) {
 const map = L.map('map', { zoomControl: false, attributionControl: true }).setView([41.06, 14.74], 12);
 const osmLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, maxNativeZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
 const satLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, maxNativeZoom: 19, attribution: 'Esri, Maxar, Earthstar Geographics' });
+function setNative() { osmLayer.options.maxNativeZoom = navigator.onLine ? 19 : 17; osmLayer.redraw(); }
 let satOn = false;
 function toggleSat() {
   if (!satOn && !navigator.onLine) return toast('Il satellite richiede la rete');
@@ -833,43 +834,47 @@ function fineLavoro() {
 /* ---------- mappa offline: scarica la zona del giro ---------- */
 function lon2x(lon, z) { return Math.floor((lon + 180) / 360 * Math.pow(2, z)); }
 function lat2y(lat, z) { const r = lat * Math.PI / 180; return Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * Math.pow(2, z)); }
+let dlStop = false;
+$('#busy').addEventListener('click', e => { if (e.target && e.target.id === 'dlStop') dlStop = true; });
 async function downloadTiles() {
   if (!navigator.onLine) return toast('Serve la rete (meglio Wi‑Fi)');
   const boxes = [
     { n: 41.5, s: 40.7, w: 14.3, e: 15.4, z0: 9, z1: 13 },          // tutta Irpinia e Sannio: paesi e strade principali
-    { n: 41.2, s: 40.9, w: 14.5, e: 14.9, z0: 14, z1: 15 }          // zona del giro (Atripalda, Valle Caudina, Ceppaloni, Apollosa)
+    { n: 41.2, s: 40.9, w: 14.5, e: 14.9, z0: 14, z1: 15 },         // zona ampia del giro, da Atripalda alla Valle Caudina
+    { n: 41.16, s: 40.96, w: 14.58, e: 14.86, z0: 16, z1: 17 }      // i tuoi paesi con tutte le stradine: Arpaise, Ceppaloni, San Leucio, Apollosa, Tufara, Roccabascerana, Pannarano
   ];
   const set = new Set();
   for (const bx of boxes) for (let z = bx.z0; z <= bx.z1; z++) {
     const x0 = lon2x(bx.w, z), x1 = lon2x(bx.e, z), y0 = lat2y(bx.n, z), y1 = lat2y(bx.s, z);
     for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) set.add(z + '/' + x + '/' + y);
   }
-  // massimo dettaglio (livelli 16-18) intorno a ogni pacco e agli indirizzi già nel database
+  // pacchi e indirizzi del database fuori da quella zona: dettaglio intorno al punto
   const pins = DAY.parcels.filter(p => p.lat != null).map(p => [p.lat, p.lng]).concat(Object.values(DB.addr).filter(a => a.lat != null).map(a => [a.lat, a.lng]));
-  for (const [la, lo] of pins) for (const z of [16, 17, 18]) {
-    const r = z === 18 ? 1 : 2, cx = lon2x(lo, z), cy = lat2y(la, z);
-    for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) set.add(z + '/' + (cx + dx) + '/' + (cy + dy));
+  for (const [la, lo] of pins) for (const z of [16, 17]) {
+    const cx = lon2x(lo, z), cy = lat2y(la, z);
+    for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) set.add(z + '/' + (cx + dx) + '/' + (cy + dy));
   }
   const c = await caches.open('tiles-v1');
   const todo = [];
   for (const t of set) { const url = 'https://tile.openstreetmap.org/' + t + '.png'; if (!(await c.match(url))) todo.push(url); }
   if (!todo.length) return toast('Mappa già scaricata');
-  if (!confirm('Scarico ' + todo.length + ' tessere (circa ' + Math.round(todo.length * 0.018) + ' MB): tutta Irpinia e Sannio, il giro in dettaglio e il massimo dettaglio intorno ai tuoi pacchi e agli indirizzi nel database. Meglio con il Wi‑Fi. Procedo?')) return;
-  const total = todo.length; let done = 0, fail = 0;
+  if (!confirm('Scarico ' + todo.length + ' tessere (circa ' + Math.round(todo.length * 0.015) + ' MB, ' + Math.round(todo.length / 14 / 60) + '–' + Math.round(todo.length / 8 / 60) + ' minuti): tutta Irpinia e Sannio e, per i tuoi paesi, tutte le stradine. Serve il Wi‑Fi e la batteria carica. Se ti interrompi, riprende da dove era arrivato. Procedo?')) return;
+  const total = todo.length; let done = 0, fail = 0; dlStop = false;
+  const msg = () => 'Scarico la mappa… ' + Math.round(done / total * 100) + '%<br><small>' + done + ' / ' + total + ' · errori ' + fail + '</small><br><button class="btn warn sm" id="dlStop" style="margin-top:16px">Interrompi</button>';
   async function worker() {
-    while (todo.length) {
+    while (todo.length && !dlStop) {
       const url = todo.pop();
       try { const r = await fetch(url, { mode: 'cors' }); if (r.ok) await c.put(url, r); else fail++; } catch (e) { fail++; }
-      await new Promise(r => setTimeout(r, 70));
-      done++; if (done % 20 === 0) busy('Scarico la mappa… ' + Math.round(done / total * 100) + '%<br><small>' + done + ' / ' + total + ' · errori ' + fail + '</small>');
+      await sleep(90);
+      done++; if (done % 15 === 0) busy(msg());
     }
   }
-  busy('Scarico la mappa… 0%'); await Promise.all([worker(), worker(), worker()]); busy();
-  toast(fail ? 'Finito con ' + fail + ' errori: premi di nuovo il tasto per completare' : 'Mappa scaricata ✔', 5000);
+  busy(msg()); await Promise.all([worker(), worker(), worker()]); busy();
+  toast(dlStop ? 'Interrotto: premi di nuovo il tasto per continuare' : fail > total * 0.05 ? 'Finito con ' + fail + ' errori: riprova più tardi per completare' : 'Mappa scaricata ✔', 6000);
 }
 
 /* ---------- avvio ---------- */
-function netState() { $('#net').className = navigator.onLine ? '' : 'off'; }
+function netState() { $('#net').className = navigator.onLine ? '' : 'off'; setNative(); }
 window.addEventListener('online', netState); window.addEventListener('offline', netState); netState();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => { });
