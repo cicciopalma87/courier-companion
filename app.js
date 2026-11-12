@@ -381,11 +381,16 @@ function prioPicker(p, ids) {
 
 /* ---------- sposta / posiziona pin ---------- */
 let moving = null;
-function startMove(id) {
+async function startMove(id) {
   const p = DAY.parcels.find(x => x.id === id); if (!p) return;
   showView('map');
-  const start = p.lat != null ? [p.lat, p.lng] : [map.getCenter().lat, map.getCenter().lng];
-  if (p.lat != null) map.setView(start, Math.max(map.getZoom(), 17));
+  let start;
+  if (p.lat != null) { start = [p.lat, p.lng]; map.setView(start, Math.max(map.getZoom(), 17)); }
+  else {
+    let g = guessCenter(p); if (!g && navigator.onLine) { busy('Cerco ' + baseComune(p.comune) + '…'); g = await fetchComuneCenter(p); busy(); }
+    if (g) { start = g; map.setView(g, 16); toast('Parti da ' + baseComune(p.comune) + ': trascina il pin sul punto giusto', 4000); }
+    else start = [map.getCenter().lat, map.getCenter().lng];
+  }
   const m = L.marker(start, { draggable: true, icon: L.divIcon({ className: '', html: '<div class="pin st-x" style="width:36px;height:36px">⊕</div>', iconSize: [36, 36], iconAnchor: [18, 18] }), zIndexOffset: 2000 }).addTo(map);
   moving = { p, m };
   const tb = $('#topbar'); tb.style.display = 'block';
@@ -404,16 +409,52 @@ function endMove() { if (moving) { map.off('click', moving.h); map.removeLayer(m
 /* ---------- geocoding online (OpenStreetMap) ---------- */
 const BBOX = { s: 40.7, n: 41.4, w: 14.3, e: 15.2 };
 const inBox = (la, lo) => la > BBOX.s && la < BBOX.n && lo > BBOX.w && lo < BBOX.e;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function nominatim(params) {
+  const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=5&addressdetails=1&countrycodes=it&' + params);
+  return r.json();
+}
+function placeMatches(item, com) {
+  const a = item.address || {};
+  return [a.town, a.city, a.village, a.municipality, a.hamlet, a.suburb].filter(Boolean).map(norm).some(n => n.includes(com) || com.includes(n));
+}
 async function geocode(p) {
-  const civ = p.civico && !/^s\.?n\.?c\.?$/i.test(p.civico) ? ' ' + p.civico : '';
-  const q = (p.via + civ + ', ' + baseComune(p.comune) + ', Italia');
+  const com = normCom(p.comune), city = encodeURIComponent(baseComune(p.comune));
+  const civ = p.civico && !/^s\.?n\.?c\.?$/i.test(p.civico) ? p.civico.trim() + ' ' : '';
   try {
-    const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=it&q=' + encodeURIComponent(q));
-    const j = await r.json();
-    if (j[0]) { const la = +j[0].lat, lo = +j[0].lon; if (inBox(la, lo)) return [la, lo]; }
-    if (civ) { const r2 = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=it&q=' + encodeURIComponent(p.via + ', ' + baseComune(p.comune) + ', Italia')); const j2 = await r2.json(); if (j2[0]) { const la = +j2[0].lat, lo = +j2[0].lon; if (inBox(la, lo)) return [la, lo, 'street']; } }
+    let j = await nominatim('street=' + encodeURIComponent(civ + p.via) + '&city=' + city);
+    let h = j.find(it => inBox(+it.lat, +it.lon) && placeMatches(it, com)); if (h) return [+h.lat, +h.lon, 'exact'];
+    if (civ) { await sleep(1100); j = await nominatim('street=' + encodeURIComponent(p.via) + '&city=' + city); h = j.find(it => inBox(+it.lat, +it.lon) && placeMatches(it, com)); if (h) return [+h.lat, +h.lon, 'street']; }
   } catch (e) { }
   return null;
+}
+const CC_FALLBACK = { 'ceppaloni': [41.0553, 14.7347], 'san leucio': [41.0647, 14.7519], 'apollosa': [41.085, 14.700] };
+function guessCenter(p) {
+  const com = normCom(p.comune); const pts = [];
+  for (const a of Object.values(DB.addr)) if (a.lat != null && normCom(a.comune) === com) pts.push([a.lat, a.lng]);
+  for (const x of DAY.parcels) if (x.lat != null && x !== p && normCom(x.comune) === com) pts.push([x.lat, x.lng]);
+  if (pts.length) return [pts.reduce((s, q) => s + q[0], 0) / pts.length, pts.reduce((s, q) => s + q[1], 0) / pts.length];
+  const cc = lsGet('sda.cc', {}); if (cc[com]) return cc[com];
+  for (const k in CC_FALLBACK) if (com.startsWith(k)) return CC_FALLBACK[k];
+  return null;
+}
+async function fetchComuneCenter(p) {
+  try {
+    const com = normCom(p.comune); const j = await nominatim('city=' + encodeURIComponent(baseComune(p.comune)));
+    const h = j.find(it => inBox(+it.lat, +it.lon)); if (!h) return null;
+    const cc = lsGet('sda.cc', {}); cc[com] = [+h.lat, +h.lon]; lsSet('sda.cc', cc); return cc[com];
+  } catch (e) { return null; }
+}
+let gq = [], gbusy = false;
+function queueGeo(p) { if (p.lat != null || !navigator.onLine) return; gq.push(p.id); if (!gbusy) runGeo(); }
+async function runGeo() {
+  gbusy = true;
+  while (gq.length) {
+    const p = DAY.parcels.find(x => x.id === gq.shift()); if (!p || p.lat != null) continue;
+    const g = await geocode(p); if (g) { p.lat = g[0]; p.lng = g[1]; p.geo = 'osm'; touch(); renderPins(); renderList(); }
+    await sleep(1100);
+  }
+  gbusy = false;
 }
 async function geocodeOne(p) {
   if (!navigator.onLine) { toast('Senza rete: posiziona a mano'); return startMove(p.id); }
@@ -520,6 +561,7 @@ function parcelForm(p, onOk, isNew) {
       else { DAY.parcels.push(p); }
       const f = lookupDB(p); if (f && p.lat == null) Object.assign(p, f);
       if (!p.prio) { const m = matchPrio(p); p.prio = m.n; p.amb = m.amb; }
+      queueGeo(p);
     }
     ok = true; touch(); counters(); renderPins(); renderList(); sheetOnClose = null; closeSheet(); if (onOk) onOk(p);
   };
@@ -598,7 +640,7 @@ function onCode(txt) {
   if (d.track && DAY.parcels.some(x => x.track === d.track)) { toast('Già in lista: ' + d.track); return; }
   const a = DB.addr[akeyP(p)];
   if (fast && p.via) {
-    DAY.parcels.push(p); if (a && a.lat != null) { p.lat = a.lat; p.lng = a.lng; p.geo = 'db'; } const m = matchPrio(p); p.prio = m.n; p.amb = m.amb;
+    DAY.parcels.push(p); if (a && a.lat != null) { p.lat = a.lat; p.lng = a.lng; p.geo = 'db'; } const m = matchPrio(p); p.prio = m.n; p.amb = m.amb; queueGeo(p);
     touch(); counters(); toast('✔ ' + (p.name || p.track) + ' – ' + fmtAddr(p) + (a && a.note ? '  📝 nota presente' : ''), 2200); return;
   }
   scanning = false; clearTimeout(scanTimer);

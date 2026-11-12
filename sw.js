@@ -1,4 +1,4 @@
-const V='sda-v4', TILES='tiles-v1';
+const V='sda-v5', TILES='tiles-v1';
 const SHELL=['./','./index.html','./app.js','./manifest.webmanifest','./icon-192.png','./icon-512.png','./lib/leaflet.js','./lib/leaflet.css','./lib/xlsx.full.min.js','./lib/zxing-wasm-reader.js','./lib/zxing_reader.wasm','./lib/images/marker-icon.png','./lib/images/layers.png'];
 self.addEventListener('install',e=>{e.waitUntil(caches.open(V).then(c=>c.addAll(SHELL)).then(()=>self.skipWaiting()));});
 self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==V&&k!==TILES).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});
@@ -13,9 +13,16 @@ self.addEventListener('fetch',e=>{
     return;
   }
   if(u.origin===location.origin){
-    e.respondWith(caches.match(e.request,{ignoreSearch:true}).then(hit=>{
-      const net=fetch(e.request).then(r=>{if(r&&r.ok){const cp=r.clone();caches.open(V).then(c=>c.put(e.request,cp));}return r;}).catch(()=>hit);
-      return hit||net;
-    }));
+    e.respondWith((async()=>{
+      const c=await caches.open(V);
+      try{
+        const r=await Promise.race([fetch(e.request),new Promise((_,rej)=>setTimeout(()=>rej(new Error('t')),3500))]);
+        if(r&&r.ok)c.put(e.request,r.clone());
+        return r;
+      }catch(err){
+        const hit=await c.match(e.request,{ignoreSearch:true})||await c.match('./index.html');
+        return hit||new Response('Offline',{status:504});
+      }
+    })());
   }
 });
