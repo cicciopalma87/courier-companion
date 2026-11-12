@@ -260,11 +260,32 @@ function counters() {
   const cd = c.filter(p => p.stato !== 'da_fare').length, rd = r.filter(p => p.stato !== 'da_fare').length;
   $('#cnt').innerHTML = 'Consegne ' + cd + '/' + c.length + '<br>Ritiri ' + rd + '/' + r.length;
 }
-function sortedParcels() {
-  const me = meMarker ? meMarker.getLatLng() : null;
-  const dd = p => (me && p.lat != null) ? distM(me, p) : 1e9;
-  return DAY.parcels.slice().sort((a, b) => ((a.prio || 999) - (b.prio || 999)) || (dd(a) - dd(b)) || normStreet(a.via).localeCompare(normStreet(b.via)) || ((parseInt(a.civico) || 0) - (parseInt(b.civico) || 0)));
+
+/* ---------- ordine di consegna (numero progressivo mostrato sui pin) ---------- */
+function cmpAddr(a, b) { return normStreet(a.via).localeCompare(normStreet(b.via)) || ((parseInt(a.civico) || 0) - (parseInt(b.civico) || 0)); }
+function ensureOrder() {
+  const ps = DAY.parcels; if (!ps.length) return;
+  const have = ps.filter(p => p.ord > 0).sort((a, b) => a.ord - b.ord);
+  const fresh = ps.filter(p => !(p.ord > 0)).sort((a, b) => ((a.prio || 999) - (b.prio || 999)) || cmpAddr(a, b));
+  for (const p of fresh) { let i = have.findIndex(q => (q.prio || 999) > (p.prio || 999)); if (i < 0) i = have.length; have.splice(i, 0, p); }
+  have.forEach((p, i) => { p.ord = i + 1; });
 }
+/* ordine automatico: per priorità del foglio; a parità, catena del più vicino partendo dalla tua posizione */
+function autoOrder() {
+  let cur = meMarker ? meMarker.getLatLng() : null; const by = {};
+  DAY.parcels.forEach(p => (by[p.prio || 999] = by[p.prio || 999] || []).push(p));
+  const seq = [];
+  for (const k of Object.keys(by).map(Number).sort((a, b) => a - b)) {
+    const pool = by[k].filter(p => p.lat != null).sort(cmpAddr), noLL = by[k].filter(p => p.lat == null).sort(cmpAddr);
+    while (pool.length) {
+      let bi = 0; if (cur) { let bd = 1e12; pool.forEach((p, i) => { const d = distM(cur, p); if (d < bd) { bd = d; bi = i; } }); }
+      const p = pool.splice(bi, 1)[0]; seq.push(p); cur = p;
+    }
+    seq.push(...noLL);
+  }
+  seq.forEach((p, i) => { p.ord = i + 1; });
+}
+function sortedParcels() { ensureOrder(); return DAY.parcels.slice().sort((a, b) => a.ord - b.ord); }
 function setStato(id, st) {
   const p = DAY.parcels.find(x => x.id === id); if (!p) return;
   p.stato = st; p.t = nowIso();
@@ -306,11 +327,11 @@ function groups() {
   return g;
 }
 function renderPins() {
-  pinLayer.clearLayers();
+  ensureOrder(); pinLayer.clearLayers();
   const g = groups();
   for (const k in g) {
     const ps = g[k]; const open = ps.filter(p => p.stato === 'da_fare');
-    const lead = open[0] || ps[0]; const n = Math.min(...ps.map(p => p.prio || 999));
+    const lead = open[0] || ps[0]; const n = Math.min(...(open.length ? open : ps).map(p => p.ord || 999));
     const cls = open.length ? stClass(lead) : stClass(ps[0]);
     const approx = ps.some(p => p.geo && p.geo !== 'db' && p.geo !== 'pin');
     const html = '<div class="pin ' + cls + (approx ? ' approx' : '') + '">' + (n < 999 ? n : '?') + (ps.length > 1 ? '<sup>' + ps.length + '</sup>' : '') + '</div>';
@@ -346,7 +367,7 @@ function parcelCard(p) {
     ? '<div class="row"><div class="tag" style="align-self:center;text-align:center;padding:12px">' + stLabel(p.stato) + '</div><button class="btn gray" data-a="undo" data-id="' + p.id + '">Annulla</button></div>'
     : '<div class="row"><button class="btn ok" data-a="done" data-id="' + p.id + '">' + (p.tipo === 'ritiro' ? 'Ritirato' : 'Consegnato') + '</button><button class="btn no" data-a="no" data-id="' + p.id + '">' + (p.tipo === 'ritiro' ? 'Non ritirato' : 'Non consegnato') + '</button></div>';
   return '<div class="card"><div class="t">' + esc(p.name || '(senza nome)') + '</div><div class="s">' + esc(fmtAddr(p)) + '</div><div style="margin-top:6px">' +
-    (p.prio ? '<span class="tag">Priorità ' + p.prio + (p.amb ? ' ?' : '') + '</span>' : '<span class="tag">Da collocare</span>') +
+    '<span class="tag">N° ' + p.ord + '</span>' + (p.prio ? '<span class="tag">Priorità ' + p.prio + (p.amb ? ' ?' : '') + '</span>' : '<span class="tag">Da collocare</span>') +
     (p.tipo === 'ritiro' ? '<span class="tag rit">RITIRO</span>' : '') + (p.cod ? '<span class="tag cod">COD ' + esc(p.cod) + ' €</span>' : '') +
     (p.geo && p.geo !== 'db' && p.geo !== 'pin' ? '<span class="tag">posizione da verificare</span>' : '') + '</div>' + note + act +
     '<div class="row">' + (p.tel ? '<a class="btn sec sm" style="text-decoration:none;text-align:center" target="_blank" href="' + waUrl(p.tel) + '">WhatsApp</a>' : '') +
@@ -416,11 +437,11 @@ async function startMove(id) {
   moving = { p, m };
   const tb = $('#topbar'); tb.style.display = 'block';
   tb.innerHTML = '<b>' + esc(fmtAddr(p)) + '</b><div style="font-size:13px;color:#51627d">Trascina il pin (o tocca la mappa). Non vedi la via? Cercala:</div>' +
-    '<div class="row" style="margin:6px 0"><input id="mvQ" placeholder="Cerca via o luogo…" value="' + esc(p.via) + '"><button class="btn sm" id="mvG" style="flex:.45">Cerca</button></div><div class="row" style="margin:4px 0"><a class="btn sec sm" style="text-decoration:none;text-align:center" target="_blank" href="https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(fmtAddr(p) + ', Italia') + '">Cerca su Google Maps</a><button class="btn sec sm" id="mvP">Incolla coordinate/link</button></div><div class="row" style="margin:4px 0"><button class="btn sec sm" id="mvMe">📍 Usa la mia posizione</button></div><div id="mvR" style="max-height:30vh;overflow:auto"></div>' +
+    '<div class="row" style="margin:6px 0"><input id="mvQ" placeholder="Cerca via o luogo…" value="' + esc(p.via) + '"><button class="btn sm" id="mvG" style="flex:.45">Cerca</button></div><div class="row" style="margin:4px 0"><a class="btn sec sm" style="text-decoration:none;text-align:center" target="_blank" href="https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(fmtAddr(p) + ', Italia') + '">Cerca su Google Maps</a><button class="btn sec sm" id="mvP">Incolla coordinate, link o Plus code</button></div><div class="row" style="margin:4px 0"><button class="btn sec sm" id="mvMe">📍 Usa la mia posizione</button></div><div id="mvR" style="max-height:30vh;overflow:auto"></div>' +
     '<div class="row"><button class="btn sec sm" id="mvC">Annulla</button><button class="btn ok sm" id="mvS">Salva</button></div>';
   const doSearch = async () => {
     const q = $('#mvQ').value.trim(); if (!q) return; const box = $('#mvR');
-    const cc0 = parseCoords(q);
+    const cc0 = parseCoords(q) || parsePlus(q, [m.getLatLng().lat, m.getLatLng().lng]);
     if (cc0) { m.setLatLng(cc0); map.setView(cc0, 19); box.innerHTML = '<div class="s" style="padding:6px">📍 Pin spostato su ' + cc0[0].toFixed(6) + ', ' + cc0[1].toFixed(6) + '. Controlla e premi Salva.</div>'; return; } box.innerHTML = '<div class="s" style="padding:6px">Cerco…</div>';
     const res = await searchPlaces(q, p);
     box.innerHTML = res.length ? res.map((r, i) => '<div class="it" data-i="' + i + '" style="padding:8px;border-bottom:1px solid #dde3ec"><div class="x"><b style="font-size:14px;white-space:normal">' + esc(r.label) + '</b><span>' + (r.src === 'db' ? 'dal database' : r.src === 'gps' ? 'da Google Maps / GPS' : r.src === 'info' ? '' : 'online') + '</span></div></div>').join('') : '<div class="s" style="padding:6px">Nessun risultato' + (navigator.onLine ? '' : ' (senza rete cerco solo nel database)') + '</div>';
@@ -471,6 +492,37 @@ async function geocode(p) {
     await sleep(1100);
   }
   return null;
+}
+
+/* ---------- Plus code (Open Location Code) ---------- */
+const OLC = '23456789CFGHJMPQRVWX';
+function olcEncode(lat, lng) {
+  let la = Math.floor((lat + 90) * 8000), lo = Math.floor((lng + 180) * 8000), c = '';
+  for (let i = 0; i < 5; i++) { c = OLC[la % 20] + OLC[lo % 20] + c; la = Math.floor(la / 20); lo = Math.floor(lo / 20); }
+  return c;
+}
+function olcDecode(code) {
+  let la = -90, lo = -180, res = 20;
+  for (let i = 0; i < Math.min(code.length, 10); i += 2) {
+    la += OLC.indexOf(code[i]) * res; lo += OLC.indexOf(code[i + 1]) * res; if (i < 8) res /= 20;
+  }
+  const size = code.length >= 10 ? 0.000125 : 20 / Math.pow(20, Math.floor(code.length / 2) - 1);
+  return [la + size / 2, lo + size / 2];
+}
+function parsePlus(t, ref) {
+  const m = String(t || '').toUpperCase().match(/(?:^|[\s,])([23456789CFGHJMPQRVWX]{2,8})\+([23456789CFGHJMPQRVWX]{2,3})(?![23456789CFGHJMPQRVWX])/);
+  if (!m) return null;
+  let head = m[1]; const tail = m[2];
+  if (head.length < 8) {
+    if (!ref) return null;
+    const pad = 8 - head.length, resolution = Math.pow(20, 2 - pad / 2);
+    head = olcEncode(ref[0], ref[1]).slice(0, pad) + head;
+    let [la, lo] = olcDecode(head + tail);
+    if (ref[0] + resolution / 2 < la && la - resolution >= -90) la -= resolution; else if (ref[0] - resolution / 2 > la && la + resolution <= 90) la += resolution;
+    if (ref[1] + resolution / 2 < lo) lo -= resolution; else if (ref[1] - resolution / 2 > lo) lo += resolution;
+    return inBox(la, lo) ? [la, lo] : null;
+  }
+  const [la, lo] = olcDecode(head + tail); return inBox(la, lo) ? [la, lo] : null;
 }
 function parseCoords(t) {
   t = String(t || '').trim(); if (!t) return null;
@@ -549,6 +601,7 @@ async function elabora() {
     if (navigator.onLine) { const g = await geocode(p); if (g) { p.lat = g[0]; p.lng = g[1]; p.geo = 'osm'; } await new Promise(r => setTimeout(r, 1100)); }
   }
   for (const p of ps) { if (!p.prio) { const m = matchPrio(p); p.prio = m.n; p.amb = m.amb; } }
+  if (!DAY.manual) autoOrder();
   touch(); busy(); renderPins(); counters(); renderList();
   const miss = ps.filter(p => p.lat == null).length;
   toast('Pronto. ' + (miss ? miss + ' da posizionare a mano.' : 'Tutti posizionati.'), 4000);
@@ -577,9 +630,9 @@ function renderList() {
   if (f === 'ritiri') ps = ps.filter(p => p.tipo === 'ritiro');
   if (f === 'da posizionare') ps = ps.filter(p => p.lat == null);
   const chips = ['tutti', 'da fare', 'fatti', 'ritiri', 'da posizionare'].map(c => '<button class="' + (c === f ? 'on' : '') + '" data-f="' + c + '">' + c + '</button>').join('');
-  el.innerHTML = '<div class="chips">' + chips + '</div><div class="list">' + (ps.map(p => '<div class="it" data-id="' + p.id + '"><div class="n ' + stClass(p) + '">' + (p.prio || '?') + '</div><div class="x"><b>' + esc(p.name || '(senza nome)') + '</b><span>' + esc(fmtAddr(p)) + (p.tipo === 'ritiro' ? ' · RITIRO' : '') + (p.lat == null ? ' · da posizionare' : '') + '</span></div><span style="font-size:12px;color:#51627d">' + (p.stato !== 'da_fare' ? '✔' : '') + '</span></div>').join('') || '<div style="padding:24px;text-align:center;color:#51627d">Nessun pacco. Usa lo Scanner, il tasto + oppure Menu → Importa file.</div>') + '</div>' +
+  el.innerHTML = '<div class="chips">' + chips + '</div><div class="list">' + (ps.map(p => '<div class="it" data-id="' + p.id + '"><div class="n ' + stClass(p) + '">' + p.ord + '</div><div class="x"><b>' + esc(p.name || '(senza nome)') + '</b><span>' + esc(fmtAddr(p)) + (p.tipo === 'ritiro' ? ' · RITIRO' : '') + (p.lat == null ? ' · da posizionare' : '') + '</span></div><span style="font-size:12px;color:#51627d">' + (p.stato !== 'da_fare' ? '✔' : '') + '</span>' + (f === 'tutti' ? '<span class="drag">☰</span>' : '') + '</div>').join('') || '<div style="padding:24px;text-align:center;color:#51627d">Nessun pacco. Usa lo Scanner, il tasto + oppure Menu → Importa file.</div>') + '</div>' +
     '<div class="legend">Legenda:<span class="st-c"></span>consegna<span class="st-cd"></span>consegnato<span class="st-cn"></span>assente<span class="st-r"></span>ritiro<span class="st-rd"></span>ritirato<span class="st-rn"></span>non ritirato</div>' +
-    '<div class="menu"><button class="btn" id="bEl">Elabora (crea i pin sulla mappa)</button><button class="btn no sm" id="bClr">Cancella tutti i pacchi di oggi</button></div>';
+    '<div class="menu"><button class="btn sec" id="bAuto">Riordina in automatico (priorità + vicinanza)</button><button class="btn" id="bEl">Elabora (crea i pin sulla mappa)</button><button class="btn no sm" id="bClr">Cancella tutti i pacchi di oggi</button></div>';
   el.querySelectorAll('[data-f]').forEach(b => b.onclick = () => { listFilter = b.dataset.f; renderList(); });
   el.querySelectorAll('.it').forEach(it => it.onclick = () => {
     const p = DAY.parcels.find(x => x.id === +it.dataset.id);
@@ -587,27 +640,47 @@ function renderList() {
     showView('map'); map.setView([p.lat, p.lng], 17);
     const g = groups()[p.lat.toFixed(4) + ',' + p.lng.toFixed(4)] || [p]; openGroup(g.map(x => x.id));
   });
+  $('#bAuto').onclick = () => { if (!confirm('Rifaccio l\'ordine di consegna: prima per priorità del foglio, poi il più vicino a te. Perdi il riordino fatto a mano. Continuo?')) return; DAY.manual = false; autoOrder(); touch(); renderPins(); renderList(); toast('Ordine rifatto', 2500); };
+  enableDrag(el);
   $('#bEl').onclick = elabora;
   $('#bClr').onclick = () => { if (DAY.parcels.length && confirm('Cancellare tutti i ' + DAY.parcels.length + ' pacchi di oggi dalla lista? Il database indirizzi resta.')) { DAY.parcels = []; DAY.nextId = 1; touch(); renderPins(); counters(); renderList(); } };
+}
+
+function enableDrag(el) {
+  el.querySelectorAll('.drag').forEach(h => {
+    h.addEventListener('pointerdown', e => {
+      e.preventDefault(); e.stopPropagation();
+      const it = h.closest('.it'), list = it.parentNode; it.classList.add('dragging');
+      const mv = ev => {
+        if (ev.clientY < 110) { el.scrollBy(0, -14); window.scrollBy(0, -14); } else if (ev.clientY > innerHeight - 130) { el.scrollBy(0, 14); window.scrollBy(0, 14); }
+        const t = document.elementFromPoint(ev.clientX, ev.clientY), o = t && t.closest && t.closest('.it');
+        if (o && o !== it && o.parentNode === list) { const r = o.getBoundingClientRect(); list.insertBefore(it, ev.clientY < r.top + r.height / 2 ? o : o.nextSibling); }
+      };
+      const up = () => {
+        document.removeEventListener('pointermove', mv); document.removeEventListener('pointerup', up); document.removeEventListener('pointercancel', up); it.classList.remove('dragging');
+        [...list.querySelectorAll('.it')].forEach((x, i) => { const p = DAY.parcels.find(q => q.id === +x.dataset.id); if (p) p.ord = i + 1; });
+        DAY.manual = true; touch(); renderPins(); renderList();
+      };
+      document.addEventListener('pointermove', mv); document.addEventListener('pointerup', up); document.addEventListener('pointercancel', up);
+    });
+    h.addEventListener('click', e => e.stopPropagation());
+  });
 }
 function distM(a, b) { const R = 6371000, r = Math.PI / 180, dLa = (b.lat - a.lat) * r, dLo = (b.lng - a.lng) * r; const x = Math.sin(dLa / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLo / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(x)); }
 /* prossima tappa: la priorità più bassa tra i pacchi aperti; a parità sceglie il più vicino alla tua posizione */
 function nextStop() {
-  const open = DAY.parcels.filter(p => p.stato === 'da_fare' && p.lat != null);
+  ensureOrder();
+  const open = DAY.parcels.filter(p => p.stato === 'da_fare' && p.lat != null).sort((a, b) => a.ord - b.ord);
   if (!open.length) return null;
-  const pr = p => p.prio || 999, best = Math.min(...open.map(pr));
-  const cand = open.filter(p => pr(p) === best);
   const me = meMarker ? meMarker.getLatLng() : null;
-  if (!me) return { p: cand[0], d: null, prio: best };
-  cand.sort((a, b) => distM(me, a) - distM(me, b));
-  return { p: cand[0], d: distM(me, cand[0]), prio: best };
+  return { p: open[0], d: me ? distM(me, open[0]) : null, prio: open[0].ord };
 }
 $('#bNext').onclick = () => {
   const r = nextStop();
   if (!r) return toast('Nessuna tappa da fare con posizione');
   const p = r.p; map.setView([p.lat, p.lng], Math.max(map.getZoom(), 16));
   const g = groups()[p.lat.toFixed(4) + ',' + p.lng.toFixed(4)] || [p]; openGroup(g.map(x => x.id));
-  toast((r.prio < 999 ? 'Priorità ' + r.prio : 'Senza priorità') + (r.d != null ? ' · a ' + (r.d < 1000 ? Math.round(r.d) + ' m' : (r.d / 1000).toFixed(1) + ' km') : ' · attiva il GPS per scegliere il più vicino'), 3500);
+  toast('Consegna n° ' + r.prio + (r.d != null ? ' · a ' + (r.d < 1000 ? Math.round(r.d) + ' m' : (r.d / 1000).toFixed(1) + ' km') : ''), 3500);
 };
 
 /* ---------- moduli di inserimento ---------- */
