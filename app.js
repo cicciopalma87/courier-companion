@@ -725,11 +725,11 @@ function lat2y(lat, z) { const r = lat * Math.PI / 180; return Math.floor((1 - M
 async function downloadTiles() {
   if (!navigator.onLine) return toast('Serve la rete (meglio Wi‑Fi)');
   const boxes = [
-    { n: 41.5, s: 40.7, w: 14.3, e: 15.4, z0: 9, z1: 14 },          // tutta Irpinia e Sannio, fino a livello paese/strade principali
-    { n: 41.2, s: 40.9, w: 14.5, e: 14.9, z0: 15, z1: 16 }           // zona del giro (Atripalda, Valle Caudina, Ceppaloni, Apollosa): livello strada
+    { n: 41.5, s: 40.7, w: 14.3, e: 15.4, z0: 9, z1: 13 },          // tutta Irpinia e Sannio, fino a livello paese/strade principali
+    { n: 41.2, s: 40.9, w: 14.5, e: 14.9, z0: 14, z1: 15 }           // zona del giro (Atripalda, Valle Caudina, Ceppaloni, Apollosa)
   ];
   const pts = DAY.parcels.filter(p => p.lat != null).map(p => [p.lat, p.lng]);
-  if (pts.length) { const b = L.latLngBounds(pts).pad(0.1); boxes.push({ n: b.getNorth(), s: b.getSouth(), w: b.getWest(), e: b.getEast(), z0: 15, z1: 16 }); }
+  if (pts.length) { const b = L.latLngBounds(pts).pad(0.1); boxes.push({ n: b.getNorth(), s: b.getSouth(), w: b.getWest(), e: b.getEast(), z0: 14, z1: 16 }); }
   const set = new Set();
   for (const bx of boxes) for (let z = bx.z0; z <= bx.z1; z++) {
     const x0 = lon2x(bx.w, z), x1 = lon2x(bx.e, z), y0 = lat2y(bx.n, z), y1 = lat2y(bx.s, z);
@@ -739,7 +739,7 @@ async function downloadTiles() {
   const todo = [];
   for (const t of set) { const url = 'https://tile.openstreetmap.org/' + t + '.png'; if (!(await c.match(url))) todo.push(url); }
   if (!todo.length) return toast('Mappa già scaricata');
-  if (!confirm('Scarico ' + todo.length + ' tessere (circa ' + Math.round(todo.length * 0.018) + ' MB): tutta Irpinia e Sannio fino ai paesi, più il dettaglio strade della zona del giro. Meglio con il Wi‑Fi. Procedo?')) return;
+  if (!confirm('Scarico ' + todo.length + ' tessere (circa ' + Math.round(todo.length * 0.018) + ' MB): tutta Irpinia e Sannio (paesi e strade principali), più il dettaglio nella zona del giro e al massimo dettaglio dove hai i pacchi. Meglio con il Wi‑Fi. Procedo?')) return;
   const total = todo.length; let done = 0, fail = 0;
   async function worker() {
     while (todo.length) {
