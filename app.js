@@ -261,7 +261,9 @@ function counters() {
   $('#cnt').innerHTML = 'Consegne ' + cd + '/' + c.length + '<br>Ritiri ' + rd + '/' + r.length;
 }
 function sortedParcels() {
-  return DAY.parcels.slice().sort((a, b) => ((a.prio || 999) - (b.prio || 999)) || normStreet(a.via).localeCompare(normStreet(b.via)) || ((parseInt(a.civico) || 0) - (parseInt(b.civico) || 0)));
+  const me = meMarker ? meMarker.getLatLng() : null;
+  const dd = p => (me && p.lat != null) ? distM(me, p) : 1e9;
+  return DAY.parcels.slice().sort((a, b) => ((a.prio || 999) - (b.prio || 999)) || (dd(a) - dd(b)) || normStreet(a.via).localeCompare(normStreet(b.via)) || ((parseInt(a.civico) || 0) - (parseInt(b.civico) || 0)));
 }
 function setStato(id, st) {
   const p = DAY.parcels.find(x => x.id === id); if (!p) return;
@@ -585,11 +587,24 @@ function renderList() {
   $('#bEl').onclick = elabora;
   $('#bClr').onclick = () => { if (DAY.parcels.length && confirm('Cancellare tutti i ' + DAY.parcels.length + ' pacchi di oggi dalla lista? Il database indirizzi resta.')) { DAY.parcels = []; DAY.nextId = 1; touch(); renderPins(); counters(); renderList(); } };
 }
+function distM(a, b) { const R = 6371000, r = Math.PI / 180, dLa = (b.lat - a.lat) * r, dLo = (b.lng - a.lng) * r; const x = Math.sin(dLa / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLo / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(x)); }
+/* prossima tappa: la priorità più bassa tra i pacchi aperti; a parità sceglie il più vicino alla tua posizione */
+function nextStop() {
+  const open = DAY.parcels.filter(p => p.stato === 'da_fare' && p.lat != null);
+  if (!open.length) return null;
+  const pr = p => p.prio || 999, best = Math.min(...open.map(pr));
+  const cand = open.filter(p => pr(p) === best);
+  const me = meMarker ? meMarker.getLatLng() : null;
+  if (!me) return { p: cand[0], d: null, prio: best };
+  cand.sort((a, b) => distM(me, a) - distM(me, b));
+  return { p: cand[0], d: distM(me, cand[0]), prio: best };
+}
 $('#bNext').onclick = () => {
-  const open = DAY.parcels.filter(p => p.stato === 'da_fare' && p.lat != null).sort((a, b) => ((a.prio || 999) - (b.prio || 999)));
-  if (!open.length) return toast('Nessuna tappa da fare con posizione');
-  const p = open[0]; map.setView([p.lat, p.lng], Math.max(map.getZoom(), 16));
+  const r = nextStop();
+  if (!r) return toast('Nessuna tappa da fare con posizione');
+  const p = r.p; map.setView([p.lat, p.lng], Math.max(map.getZoom(), 16));
   const g = groups()[p.lat.toFixed(4) + ',' + p.lng.toFixed(4)] || [p]; openGroup(g.map(x => x.id));
+  toast((r.prio < 999 ? 'Priorità ' + r.prio : 'Senza priorità') + (r.d != null ? ' · a ' + (r.d < 1000 ? Math.round(r.d) + ' m' : (r.d / 1000).toFixed(1) + ' km') : ' · attiva il GPS per scegliere il più vicino'), 3500);
 };
 
 /* ---------- moduli di inserimento ---------- */
