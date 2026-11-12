@@ -1,5 +1,5 @@
 'use strict';
-/* SDA Companion – app corriere (PWA). Dati solo sul telefono, database in file .xlsx */
+/* Courier Companion – app corriere (PWA). Dati solo sul telefono, database in file .xlsx */
 const VER = '1.0';
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
