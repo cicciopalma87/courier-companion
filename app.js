@@ -849,7 +849,7 @@ $('#fImport').onchange = async ev => {
     }
     saveDB(); saveDay(); busy(); counters(); renderPins(); renderList(); renderMenu();
     toast(msg.join(' · ') || 'Nessun dato riconosciuto', 4000);
-    if (pac && pac.length) { showView('map'); fitPins(); }
+    if (pac && pac.length) { showView('map'); fitPins(); if (DAY.parcels.some(p => p.lat == null)) elabora(); }
   } catch (e) { busy(); toast('File non leggibile'); }
 };
 function importParcels(rows) {
