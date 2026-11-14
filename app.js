@@ -1008,8 +1008,10 @@ function parseLabelText(text) {
   if (di >= 0) { const rem = lines[di].replace(/^.*?destinat\w*\s*/i, '').replace(/\b(rif\.?\s*)?tel\.?\s*/i, '').trim(); if (rem.replace(/\S*\d\S*/g, '').split(/\s+/).filter(w => w.length > 2).length) tail.unshift(rem); }
   const vi = tail.findIndex(l => VIA_RE.test(l));
   const d = { track: '', name: '', via: '', civico: '', cap: '', comune: '', prov: '', tel: '', cod: '', tipo: 'consegna' };
-  const capM = (tail.join(' ').match(/\b(8\d{4})\b/) || text.match(/\b(8\d{4})\b/)); if (capM) d.cap = capM[1];
-  const t = text.replace(/(\d)\s(?=\d)/g, '$1'); const tel = t.match(/\b(3\d{9})\b/); if (tel) d.tel = tel[1];
+  const capOk = c => { const n = +c; return (n >= 82010 && n <= 82100) || (n >= 83010 && n <= 83100); }; /* solo province di Benevento e Avellino: scarta il CAP del mittente */
+  const capIn = str => (str.match(/\b\d{5}\b/g) || []).find(capOk);
+  d.cap = capIn(tail.join(' ')) || capIn(text) || '';
+  const sp = x => x.replace(/(\d)\s(?=\d)/g, '$1'); const tel = sp(tail.join(' ')).match(/\b(3\d{9})\b/) || sp(text.slice(di >= 0 ? text.search(/destinat/i) : 0)).match(/\b(3\d{9})\b/); if (tel) d.tel = tel[1];
   const trk = text.match(/\b(\d{3}[A-Z]\d{8,12}[A-Z]?|[A-Z0-9]{14,18})\b/); if (trk && /\d/.test(trk[1]) && /[A-Z]/.test(trk[1])) d.track = trk[1];
   if (vi < 0) return d;
   const NOTE_RE = /\b(citofon\w*|chiam\w*|telefon\w*|avvis\w*|suon\w*|scala|int\.?\s*\d|interno|piano|presso|c\/o|note|lasciare|consegn\w*|orari\w*)\b/i;
