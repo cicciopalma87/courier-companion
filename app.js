@@ -791,7 +791,7 @@ function parcelForm(p, onOk, isNew) {
     '<div class="row"><div style="flex:.6"><label>CAP</label><input id="f_cap" value="' + esc(p.cap) + '" inputmode="numeric"></div><div><label>Città</label><input id="f_com" value="' + esc(p.comune) + '"></div></div>' +
     '<div class="row"><div><label>Telefono (verifica che sia del destinatario)</label><input id="f_tel" value="' + esc(p.tel) + '" inputmode="tel"></div><div style="flex:.6"><label>COD €</label><input id="f_cod" value="' + esc(p.cod) + '"></div></div>' +
     '<label>Tipo</label><select id="f_tipo"><option value="consegna"' + (p.tipo === 'consegna' ? ' selected' : '') + '>Consegna</option><option value="ritiro"' + (p.tipo === 'ritiro' ? ' selected' : '') + '>Ritiro</option></select>' +
-    '<label>Note sull\'indirizzo (restano nel database)</label><textarea id="f_note">' + esc(a ? a.note : '') + '</textarea>' +
+    '<label>Note sull\'indirizzo (restano nel database)</label><textarea id="f_note">' + esc(a && a.note ? a.note : (p.nota || '')) + '</textarea>' +
     (a && a.lat != null ? '<div class="tag" style="margin-top:6px">posizione già nel database</div>' : '') +
     '<div class="row"><button class="btn sec" id="f_c">Annulla</button><button class="btn ok" id="f_o">OK</button></div>', () => { if (typeof p._cancel === 'function') p._cancel(); });
   let ok = false;
@@ -1005,20 +1005,25 @@ function parseLabelText(text) {
   }).filter(s => s.length > 1);
   const di = lines.findIndex(l => /destinat/i.test(l));
   const tail = lines.slice(di >= 0 ? di + 1 : 0, di >= 0 ? di + 9 : undefined);
+  if (di >= 0) { const rem = lines[di].replace(/^.*?destinat\w*\s*/i, '').replace(/\b(rif\.?\s*)?tel\.?\s*/i, '').trim(); if (rem.replace(/\S*\d\S*/g, '').split(/\s+/).filter(w => w.length > 2).length) tail.unshift(rem); }
   const vi = tail.findIndex(l => VIA_RE.test(l));
   const d = { track: '', name: '', via: '', civico: '', cap: '', comune: '', prov: '', tel: '', cod: '', tipo: 'consegna' };
   const capM = (tail.join(' ').match(/\b(8\d{4})\b/) || text.match(/\b(8\d{4})\b/)); if (capM) d.cap = capM[1];
   const t = text.replace(/(\d)\s(?=\d)/g, '$1'); const tel = t.match(/\b(3\d{9})\b/); if (tel) d.tel = tel[1];
   const trk = text.match(/\b(\d{3}[A-Z]\d{8,12}[A-Z]?|[A-Z0-9]{14,18})\b/); if (trk && /\d/.test(trk[1]) && /[A-Z]/.test(trk[1])) d.track = trk[1];
   if (vi < 0) return d;
-  const addr = tail[vi].replace(/\s*[,;]\s*$/, '');
+  const NOTE_RE = /\b(citofon\w*|chiam\w*|telefon\w*|avvis\w*|suon\w*|scala|int\.?\s*\d|interno|piano|presso|c\/o|note|lasciare|consegn\w*|orari\w*)\b/i;
+  const notes = []; let addr = tail[vi].replace(/\s*[,;]\s*$/, '');
+  const nm0 = addr.search(NOTE_RE); if (nm0 > 3) { notes.push(addr.slice(nm0).trim()); addr = addr.slice(0, nm0).replace(/[\s,;-]+$/, ''); }
+  tail.forEach((l, i) => { if (i !== vi && i > 0 && NOTE_RE.test(l) && !/^(rif|tel)/i.test(l) && l.split(' ').length > 2 && i > vi - 3) notes.push(l.replace(/\b3\d{9}\b/g, '').trim()); });
+  if (notes.length) d.nota = [...new Set(notes)].join(' · ');
   const m = addr.match(/^(.*?)[,\s]+(?:n\.?|nr\.?|civ\.?)?\s*(\d+\s*[a-zA-Z]?(?:\/\w+)?|s\.?n\.?c\.?)\s*$/i);
   if (m) { d.via = m[1].replace(/[,\s]+$/, ''); d.civico = m[2].replace(/\s+/g, ''); } else d.via = addr;
   d.via = tcase(d.via);
-  const nm = tail.slice(0, vi).reverse().map(l => l.replace(/\b\S*\d\S*\b/g, '').replace(/\s+/g, ' ').trim()).find(l => l.split(' ').filter(w => w.length > 2).length >= 1);
+  const nm = tail.slice(0, vi).reverse().map(l => l.replace(/\b\S*\d\S*\b/g, '').replace(/\s+/g, ' ').trim()).find(l => !/^(tel|cell|rif|telefono|destinat|cap)\b/i.test(l) && !NOTE_RE.test(l) && l.split(' ').filter(w => w.length > 2).length >= 1);
   if (nm) d.name = tcase(nm.split(' ').filter(w => w.length > 1).join(' '));
   const places = [];
-  for (const l of tail.slice(vi + 1, vi + 5)) { const c = l.replace(/\([A-Z]{2}\)|\b[A-Z]{2}$/g, '').replace(/[^\p{L}' ]/gu, ' ').split(/\s+/).filter(w => w.length > 2 || /^(di|a|del|dei)$/i.test(w)).join(' ').trim(); if (c.length >= 4 && !/lettera|vettura|spedizione|importo|pagamento|peso|collit|contrassegno/i.test(c)) places.push(c); else if (places.length) break; }
+  for (const l of tail.slice(vi + 1, vi + 5)) { const c = l.replace(/\([A-Z]{2}\)|\b[A-Z]{2}$/g, '').replace(/[^\p{L}' ]/gu, ' ').split(/\s+/).filter(w => w.length > 2 || /^(di|a|del|dei)$/i.test(w)).join(' ').trim(); if (c.length >= 4 && !NOTE_RE.test(c) && !/lettera|vettura|spedizione|importo|pagamento|peso|collit|contrassegno/i.test(c)) places.push(c); else if (places.length) break; }
   if (places.length) d.comune = tcase(places[Math.min(places.length, 2) - 1]); const frz = places.length >= 2 ? tcase(places[0]) : '';
   /* correzione dai nomi già noti (vie e comuni) */
   const sqv = sqStreet(d.via); if (sqv.length >= 4) { const hit = knownStreets().find(e => { const t = sqStreet(e.via); return t === sqv || lev(t, sqv) <= 1; }); if (hit) d.via = hit.via; }
