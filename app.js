@@ -972,6 +972,109 @@ function onCode(txt) {
   parcelForm(p, () => { toast('Aggiunto: ' + (p.name || p.track)); if (curView === 'scan') { scanning = true; loopScan(); } }, true);
   if (!d.via) toast('Etichetta senza indirizzo: completa a mano');
 }
+
+/* ---------- lettura del testo dell'etichetta (OCR, funziona anche offline dopo il primo uso) ---------- */
+let ocrW = null;
+function loadScript(src) { return new Promise((res, rej) => { const e = document.createElement('script'); e.src = src; e.onload = res; e.onerror = () => rej(new Error('script ' + src)); document.head.appendChild(e); }); }
+async function ocrWorker() {
+  if (ocrW) return ocrW;
+  if (typeof Tesseract === 'undefined') await loadScript('lib/ocr/tesseract.min.js');
+  const base = new URL('lib/ocr/', location.href).href;
+  ocrW = await Tesseract.createWorker('ita', 1, { workerPath: base + 'worker.min.js', corePath: base, langPath: base, cacheMethod: 'none' });
+  return ocrW;
+}
+function rotCanvas(src, deg, maxSide) {
+  const w0 = src.width, h0 = src.height, sc = Math.min(1, maxSide / Math.max(w0, h0)), w = Math.round(w0 * sc), h = Math.round(h0 * sc);
+  const r = deg * Math.PI / 180, cs = Math.abs(Math.cos(r)), sn = Math.abs(Math.sin(r));
+  const W = Math.ceil(w * cs + h * sn), H = Math.ceil(w * sn + h * cs);
+  const c = document.createElement('canvas'); c.width = W; c.height = H; const x = c.getContext('2d');
+  x.fillStyle = '#fff'; x.fillRect(0, 0, W, H); x.translate(W / 2, H / 2); x.rotate(r); x.filter = 'grayscale(1) contrast(1.35)'; x.drawImage(src, -w / 2, -h / 2, w, h);
+  return c;
+}
+const VIA_RE = /^(via|viale|v\.le|corso|c\.so|piazza|p\.zza|piazzale|largo|vico|vicolo|strada|s\.p\.|sp|s\.s\.|contrada|c\.da|localit[àa]?|loc\.|frazione|fraz\.|traversa|rione|salita|discesa|borgo|parco)\b/i;
+const tcase = s => String(s).toLowerCase().replace(/(^|[\s'.-])\p{L}/gu, m => m.toUpperCase()).replace(/ Di /g, ' di ').replace(/ Del /g, ' del ').replace(/ Della /g, ' della ');
+function ocrScore(txt, conf) {
+  let sc = conf || 0; if (/destinat/i.test(txt)) sc += 60; if (/\bvia\b|viale|corso|piazza|contrada|strada/i.test(txt)) sc += 25; if (/\b8\d{4}\b/.test(txt)) sc += 25; if (/spedizione|mittente|lettera di vettura/i.test(txt)) sc += 15; return sc;
+}
+function parseLabelText(text) {
+  const lines = text.split(/\n/).map(raw => {
+    let tk = raw.replace(/[|_=~<>«»]+/g, ' ').split(/\s+/).filter(x => x && !/^[^\p{L}\d]+$/u.test(x));
+    const vi0 = tk.findIndex((x, i) => i < 5 && /^(\\?ia|via|viale|corso|piazza|piazzale|largo|vico|vicolo|strada|contrada|localit[àa]|frazione|traversa)$/i.test(x));
+    if (vi0 >= 0) { tk = tk.slice(vi0); if (/^\\?ia$/i.test(tk[0])) tk[0] = 'Via'; }
+    return tk.join(' ').replace(/^[^\p{L}\d]+/u, '').trim();
+  }).filter(s => s.length > 1);
+  const di = lines.findIndex(l => /destinat/i.test(l));
+  const tail = lines.slice(di >= 0 ? di + 1 : 0, di >= 0 ? di + 9 : undefined);
+  const vi = tail.findIndex(l => VIA_RE.test(l));
+  const d = { track: '', name: '', via: '', civico: '', cap: '', comune: '', prov: '', tel: '', cod: '', tipo: 'consegna' };
+  const capM = (tail.join(' ').match(/\b(8\d{4})\b/) || text.match(/\b(8\d{4})\b/)); if (capM) d.cap = capM[1];
+  const t = text.replace(/(\d)\s(?=\d)/g, '$1'); const tel = t.match(/\b(3\d{9})\b/); if (tel) d.tel = tel[1];
+  const trk = text.match(/\b(\d{3}[A-Z]\d{8,12}[A-Z]?|[A-Z0-9]{14,18})\b/); if (trk && /\d/.test(trk[1]) && /[A-Z]/.test(trk[1])) d.track = trk[1];
+  if (vi < 0) return d;
+  const addr = tail[vi].replace(/\s*[,;]\s*$/, '');
+  const m = addr.match(/^(.*?)[,\s]+(?:n\.?|nr\.?|civ\.?)?\s*(\d+\s*[a-zA-Z]?(?:\/\w+)?|s\.?n\.?c\.?)\s*$/i);
+  if (m) { d.via = m[1].replace(/[,\s]+$/, ''); d.civico = m[2].replace(/\s+/g, ''); } else d.via = addr;
+  d.via = tcase(d.via);
+  const nm = tail.slice(0, vi).reverse().map(l => l.replace(/\b\S*\d\S*\b/g, '').replace(/\s+/g, ' ').trim()).find(l => l.split(' ').filter(w => w.length > 2).length >= 1);
+  if (nm) d.name = tcase(nm.split(' ').filter(w => w.length > 1).join(' '));
+  const places = [];
+  for (const l of tail.slice(vi + 1, vi + 5)) { const c = l.replace(/\([A-Z]{2}\)|\b[A-Z]{2}$/g, '').replace(/[^\p{L}' ]/gu, ' ').split(/\s+/).filter(w => w.length > 2 || /^(di|a|del|dei)$/i.test(w)).join(' ').trim(); if (c.length >= 4 && !/lettera|vettura|spedizione|importo|pagamento|peso|collit|contrassegno/i.test(c)) places.push(c); else if (places.length) break; }
+  if (places.length) d.comune = tcase(places[Math.min(places.length, 2) - 1]); const frz = places.length >= 2 ? tcase(places[0]) : '';
+  /* correzione dai nomi già noti (vie e comuni) */
+  const sqv = sqStreet(d.via); if (sqv.length >= 4) { const hit = knownStreets().find(e => { const t = sqStreet(e.via); return t === sqv || lev(t, sqv) <= 1; }); if (hit) d.via = hit.via; }
+  const coms = new Set(KNOWN_COM.map(baseComuneRaw)); Object.values(DB.addr).forEach(a => a.comune && coms.add(normCom(a.comune)));
+  if (frz && coms.has(normCom(d.comune)) && !coms.has(normCom(frz))) d.comune = frz + ' di ' + d.comune;
+  const nc = normCom(d.comune); if (nc && !/ di /.test(d.comune)) { const hit = [...coms].find(c => c === nc || (nc.length >= 5 && lev(c, nc) <= 1)); if (hit) d.comune = tcase(hit); }
+  return d;
+}
+const baseComuneRaw = c => c;
+/* direzione delle righe di testo/codici (mod 90°) dal profilo di proiezione dei pixel scuri */
+function skewAngle(bmp) {
+  const c = rotCanvas(bmp, 0, 480), x = c.getContext('2d', { willReadFrequently: true }), W = c.width, H = c.height, id = x.getImageData(0, 0, W, H).data;
+  const g = new Uint8Array(W * H); let sum = 0, sq = 0;
+  for (let i = 0; i < W * H; i++) { const v = id[i * 4]; g[i] = v; sum += v; sq += v * v; }
+  const mean = sum / (W * H), sd = Math.sqrt(sq / (W * H) - mean * mean), th = mean - 0.7 * sd;
+  const pts = []; for (let y = 0; y < H; y++) for (let xx = 0; xx < W; xx++) if (g[y * W + xx] < th) pts.push(xx, y);
+  let best = 0, bv = -1; const R = Math.ceil(Math.hypot(W, H)) + 2;
+  for (let a = -45; a < 45; a += 1) {
+    const r = a * Math.PI / 180, cs = Math.cos(r), sn = Math.sin(r), h = new Float64Array(2 * R + 1);
+    for (let i = 0; i < pts.length; i += 2) h[Math.round(pts[i + 1] * cs - pts[i] * sn) + R]++;
+    let m = 0, q = 0, n = 0; for (let i = 0; i < h.length; i++) if (h[i]) { m += h[i]; q += h[i] * h[i]; n++; }
+    const v = q / Math.max(1, n) - (m / Math.max(1, n)) ** 2 + 0 * m; /* varianza */
+    let vv = 0; for (let i = 1; i < h.length; i++) vv += (h[i] - h[i - 1]) ** 2; /* righe nette = forti differenze tra righe vicine */
+    if (vv > bv) { bv = vv; best = a; }
+  }
+  return best;
+}
+async function ocrLabel(file) {
+  busy('Preparo la lettura (la prima volta può scaricare ~8 MB)…');
+  const bmp = await createImageBitmap(file); const w = await ocrWorker();
+  const sk = skewAngle(bmp); window.lastSkew = sk;
+  const tries = [-sk, -sk + 180, -sk + 90, -sk + 270, -sk + 12, -sk - 12, -sk + 168, -sk + 192]; const found = [];
+  for (let i = 0; i < tries.length; i++) {
+    busy('Leggo l\'etichetta… ' + (i + 1) + '/' + tries.length);
+    const o = await w.recognize(rotCanvas(bmp, tries[i], 1800)); const sc = ocrScore(o.data.text, o.data.confidence); const dd = parseLabelText(o.data.text); window.lastOcr = o.data.text;
+    found.push({ sc, dd });
+    if (/destinat/i.test(o.data.text) && dd.via) break;
+  }
+  found.sort((x, y) => y.sc - x.sc); if (bmp.close) bmp.close(); busy(); return found[0].dd;
+}
+function ocrToForm(d) {
+  const p = newParcel(d); scanning = false; clearTimeout(scanTimer);
+  p._cancel = () => { if (curView === 'scan') { scanning = true; loopScan(); } };
+  parcelForm(p, () => { toast('Aggiunto: ' + (p.name || p.track || fmtAddr(p))); if (curView === 'scan') { scanning = true; loopScan(); } }, true);
+  toast('Letto dal testo: controlla nome, via e civico prima di OK', 5000);
+}
+$('#bOcr').onclick = () => { shotPending = true; stopCam(); $('#fOcr').click(); };
+$('#fOcr').addEventListener('change', async ev => {
+  const f = ev.target.files[0]; ev.target.value = ''; shotPending = false;
+  if (!f) { if (curView === 'scan') startCam(); return; }
+  try {
+    const d = await ocrLabel(f); busy();
+    if (curView === 'scan') await startCam();
+    if (d && (d.via || d.cap || d.name)) ocrToForm(d); else toast('Testo non riconosciuto: rifai la foto con l\'etichetta dritta, ben illuminata e a fuoco', 5000);
+  } catch (e) { busy(); toast('Lettura testo non riuscita: ' + String(e && e.message || e).slice(0, 60) + (navigator.onLine ? '' : ' (la prima volta serve la rete)'), 5000); if (curView === 'scan') startCam(); }
+});
 $('#bFast').onclick = () => { fast = !fast; $('#bFast').textContent = 'Veloce: ' + (fast ? 'sì' : 'no'); };
 $('#bPhoto').onclick = () => $('#fPhoto').click();
 $('#bShot').onclick = () => { shotPending = true; stopCam(); $('#fShot').click(); };
