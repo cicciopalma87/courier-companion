@@ -131,8 +131,26 @@ function normCom(c) {
 }
 function locOf(c, cap) { const n = norm(c); if (/^beltiglio/.test(n)) return 'bt'; if (/^san giovanni di ceppaloni/.test(n)) return 'sg'; if (/^ceppaloni/.test(n) && String(cap || '').trim() === '82010') return 'sgbt'; return ''; }
 function baseComune(c) { const n = normCom(c); return n.replace(/\b\w/g, x => x.toUpperCase()); }
-function akey(via, civ, com) { return normStreet(via) + '|' + norm(civ) + '|' + normCom(com); }
+const sqStreet = s => normStreet(s).replace(/ /g, '');
+function akey(via, civ, com) { return sqStreet(via) + '|' + norm(civ) + '|' + normCom(com); }
 const akeyP = p => akey(p.via, p.civico, p.comune);
+/* le chiavi del database ignorano gli spazi nel nome della via (abate andrea = abateandrea): riallineo quelle vecchie */
+function rekeyDB() {
+  const out = {}; let ch = false;
+  for (const [k, a] of Object.entries(DB.addr)) {
+    const nk = akey(a.via, a.civico, a.comune); if (nk !== k) ch = true;
+    const c = out[nk];
+    if (!c) { out[nk] = a; continue; }
+    const [n, o] = (a.mod || '') >= (c.mod || '') ? [a, c] : [c, a];
+    if (n.lat == null && o.lat != null) { n.lat = o.lat; n.lng = o.lng; }
+    if (!n.note && o.note) n.note = o.note; else if (o.note && n.note !== o.note && !n.note.includes(o.note)) n.note += ' · ' + o.note;
+    if (!n.prio && o.prio) n.prio = o.prio;
+    const nm = new Set([].concat(n.nomi || [], o.nomi || [])); if (nm.size) n.nomi = [...nm];
+    out[nk] = n;
+  }
+  if (ch || Object.keys(out).length !== Object.keys(DB.addr).length) { DB.addr = out; try { saveDB(); } catch (e) { } }
+}
+try { rekeyDB(); } catch (e) { }
 
 /* ---------- priorità: abbinamento ---------- */
 function matchPrio0(p) {
@@ -148,7 +166,8 @@ function matchPrio0(p) {
     for (const raw of (e.keys || [])) {
       const star = String(raw).startsWith('*'); if (!comOk && !star) continue;
       const [kk, r] = String(raw).replace(/^\*/, '').split('@'); const k = normStreet(kk);
-      if (!k || !padded.includes(' ' + k + ' ')) continue;
+      if (!k) continue;
+      if (!padded.includes(' ' + k + ' ') && !(k.replace(/ /g, '').length >= 7 && sqStreet(st).includes(k.replace(/ /g, '')))) continue;
       if (r) { const [lo, hi] = r.split('-').map(Number); if (!(civ >= lo && civ <= hi)) continue; }
       const score = k.length + (r ? 100 : 0);
       if (score > bs) { bs = score; best = [e]; } else if (score === bs && !best.includes(e)) best.push(e);
@@ -163,8 +182,8 @@ function matchPrio0(p) {
 
 /* se la via non è nel foglio: stessa via degli altri pacchi, altrimenti la priorità mediana del paese (segnata con ?) */
 function estPrio(p) {
-  const st = normStreet(p.via), com = normCom(p.comune);
-  const same = DAY.parcels.filter(q => q !== p && q.prio && !q.amb && normCom(q.comune) === com && st && normStreet(q.via) === st).map(q => q.prio);
+  const st = sqStreet(p.via), com = normCom(p.comune);
+  const same = DAY.parcels.filter(q => q !== p && q.prio && !q.amb && normCom(q.comune) === com && st && sqStreet(q.via) === st).map(q => q.prio);
   if (same.length) return Math.min(...same);
   const ns = DB.prio.filter(e => e.com && com && com.startsWith(e.com)).map(e => e.n).sort((a, b) => a - b);
   return ns.length ? ns[Math.floor(ns.length / 2)] : 0;
@@ -298,8 +317,8 @@ function ensureOrder() {
 /* posizione "di ordinamento" anche per i pacchi senza pin: stessa via, oppure baricentro del paese */
 function sortPos(p) {
   if (p.lat != null) return p;
-  const st = normStreet(p.via), com = normCom(p.comune);
-  const pts = DAY.parcels.filter(q => q.lat != null && normCom(q.comune) === com && (!st || normStreet(q.via) === st));
+  const st = sqStreet(p.via), com = normCom(p.comune);
+  const pts = DAY.parcels.filter(q => q.lat != null && normCom(q.comune) === com && (!st || sqStreet(q.via) === st));
   const pool = pts.length ? pts : DAY.parcels.filter(q => q.lat != null && normCom(q.comune) === com);
   if (!pool.length) return null;
   return { lat: pool.reduce((a, q) => a + q.lat, 0) / pool.length, lng: pool.reduce((a, q) => a + q.lng, 0) / pool.length };
@@ -482,6 +501,18 @@ async function startMove(id) {
   };
   $('#mvP').onclick = async () => { try { const t = await navigator.clipboard.readText(); $('#mvQ').value = t; doSearch(); } catch (e) { toast('Incolla a mano nel campo di ricerca (tieni premuto → Incolla)'); } };
   $('#mvMe').onclick = () => { if (!meMarker) return toast('GPS non ancora attivo: premi il tasto Io e aspetta il punto blu', 4000); const ll = meMarker.getLatLng(); m.setLatLng(ll); map.setView(ll, 19); toast('Pin portato sulla tua posizione: premi Salva', 3500); };
+  let taT = null, taSeq = 0;
+  $('#mvQ').addEventListener('input', () => {
+    const q = $('#mvQ').value.trim(), box = $('#mvR'), seq = ++taSeq; clearTimeout(taT);
+    if (q.length < 3 || parseCoords(q) || /^[0-9A-Z]{4,8}\+/i.test(q)) { if (q.length < 3) box.innerHTML = ''; return; }
+    const row = (lab, sub, i) => '<div class="it" data-t="' + i + '" style="padding:8px;border-bottom:1px solid #dde3ec"><div class="x"><b style="font-size:14px;white-space:normal">' + esc(lab) + '</b><span>' + sub + '</span></div></div>';
+    const loc = suggestStreets(q); const items = [];
+    loc.forEach(e => items.push({ label: e.via + (e.com ? ', ' + e.com : ''), lat: e.pts.length ? e.pts[0].lat : null, lng: e.pts.length ? e.pts[0].lng : null, txt: e.via + (e.com ? ' ' + e.com : '') }));
+    const draw = (extra) => { const all = items.concat(extra || []); box.innerHTML = all.map((r, i) => row(r.label, r.lat == null ? 'tocca per cercare' : (r.on ? 'online' : 'dal database'), i)).join(''); box.querySelectorAll('[data-t]').forEach(el => el.onclick = () => { const r = all[+el.dataset.t]; if (r.lat != null) { m.setLatLng([r.lat, r.lng]); map.setView([r.lat, r.lng], 18); box.innerHTML = ''; } else { $('#mvQ').value = r.txt || r.label; doSearch(); } }); };
+    if (items.length) draw();
+    if (!navigator.onLine || q.length < 4) return;
+    taT = setTimeout(async () => { try { const ex = (await photonSuggest(q + ' ' + baseComune(p.comune))).map(x => Object.assign(x, { on: 1 })); if (seq === taSeq) draw(ex); } catch (e) { } }, 400);
+  });
   $('#mvG').onclick = doSearch; $('#mvQ').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
   moving.h = e => { if (moving) m.setLatLng(e.latlng); }; map.on('click', moving.h);
   $('#mvC').onclick = endMove;
@@ -564,6 +595,32 @@ function parseCoords(t) {
   const la = parseFloat(m[1].replace(',', '.')), lo = parseFloat(m[2].replace(',', '.'));
   return isFinite(la) && isFinite(lo) && inBox(la, lo) ? [la, lo] : null;
 }
+
+/* ---------- suggerimenti mentre scrivi (database offline + Photon online) ---------- */
+function lev(a, b) { const m = a.length, n = b.length; if (Math.abs(m - n) > 2) return 9; let pr = Array.from({ length: n + 1 }, (_, j) => j); for (let i = 1; i <= m; i++) { const cu = [i]; for (let j = 1; j <= n; j++) cu[j] = Math.min(pr[j] + 1, cu[j - 1] + 1, pr[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); pr = cu; } return pr[n]; }
+function knownStreets() {
+  const m = new Map();
+  const add = (via, com, a) => { if (!via) return; const k = sqStreet(via) + '|' + normCom(com); let e = m.get(k); if (!e) { e = { via: String(via).trim(), com: com || '', pts: [] }; m.set(k, e); } if (a && a.lat != null) e.pts.push(a); };
+  for (const a of Object.values(DB.addr)) add(a.via, a.comune, a);
+  for (const q of (DAY.parcels || [])) add(q.via, q.comune, q.lat != null ? q : null);
+  return [...m.values()];
+}
+function suggestStreets(q) {
+  const sq = normStreet(q).replace(/ /g, ''); if (sq.length < 3) return [];
+  const sc = [];
+  for (const e of knownStreets()) {
+    const t = sqStreet(e.via); let s = 0;
+    if (t.startsWith(sq)) s = 3; else if (t.includes(sq)) s = 2; else if (sq.length >= 5 && lev(t.slice(0, sq.length + 1), sq) <= 1) s = 1; else if (sq.length >= 5 && lev(t, sq) <= 2) s = 1;
+    if (s) sc.push([s, e]);
+  }
+  return sc.sort((a, b) => b[0] - a[0]).slice(0, 6).map(x => x[1]);
+}
+async function photonSuggest(q) {
+  const r = await fetch('https://photon.komoot.io/api/?limit=5&lang=it&lat=41.05&lon=14.75&q=' + encodeURIComponent(q));
+  const j = await r.json(); const out = [];
+  for (const f of (j.features || [])) { const [lng, lat] = f.geometry.coordinates; if (!inBox(lat, lng)) continue; const pr = f.properties || {}; const lab = [pr.name || pr.street, pr.housenumber, pr.city || pr.town || pr.village || pr.county].filter(Boolean).join(' '); if (lab) out.push({ label: lab, lat, lng }); }
+  return out;
+}
 async function searchPlaces(q, p) {
   const out = [], nq = norm(q);
   const cc = parseCoords(q); if (cc) { out.push({ label: 'Coordinate incollate: ' + cc[0].toFixed(6) + ', ' + cc[1].toFixed(6), lat: cc[0], lng: cc[1], src: 'gps' }); return out; }
@@ -615,15 +672,15 @@ async function geocodeOne(p) {
 function lookupDB(p) {
   const exact = DB.addr[akeyP(p)];
   if (exact && exact.lat != null) return { lat: exact.lat, lng: exact.lng, geo: 'db' };
-  const st = normStreet(p.via), com = normCom(p.comune), civ = parseInt(p.civico, 10);
+  const st = sqStreet(p.via), com = normCom(p.comune), civ = parseInt(p.civico, 10);
   if (!isFinite(civ)) { /* senza numero (snc): centro dei punti già noti di quella via */
-    const pts = Object.values(DB.addr).filter(a => a.lat != null && normStreet(a.via) === st && normCom(a.comune) === com);
+    const pts = Object.values(DB.addr).filter(a => a.lat != null && sqStreet(a.via) === st && normCom(a.comune) === com);
     return pts.length ? { lat: pts.reduce((x, a) => x + a.lat, 0) / pts.length, lng: pts.reduce((x, a) => x + a.lng, 0) / pts.length, geo: 'near' } : null;
   }
   /* punti noti della stessa via con numero: se il civico cade tra due numeri noti lo interpolo, altrimenti uso il più vicino */
   const kn = [];
   for (const a of Object.values(DB.addr)) {
-    if (a.lat == null || normStreet(a.via) !== st || normCom(a.comune) !== com) continue;
+    if (a.lat == null || sqStreet(a.via) !== st || normCom(a.comune) !== com) continue;
     const c = parseInt(a.civico, 10); if (isFinite(c)) kn.push({ c, lat: a.lat, lng: a.lng });
   }
   if (!kn.length) return null;
@@ -730,7 +787,7 @@ function parcelForm(p, onOk, isNew) {
   const a = DB.addr[akeyP(p)];
   sheet('<h3>' + (isNew ? 'Nuovo ' + (p.tipo === 'ritiro' ? 'ritiro' : 'pacco') : 'Dati pacco') + '</h3>' +
     '<label>Destinatario</label><input id="f_name" value="' + esc(p.name) + '">' +
-    '<div class="row"><div><label>Via</label><input id="f_via" value="' + esc(p.via) + '"></div><div style="flex:.5"><label>Civico</label><input id="f_civ" value="' + esc(p.civico) + '"></div></div>' +
+    '<div class="row"><div><label>Via</label><input id="f_via" list="dl_via" autocomplete="off" value="' + esc(p.via) + '"><datalist id="dl_via">' + knownStreets().map(e => '<option value="' + esc(e.via) + '">').join('') + '</datalist></div><div style="flex:.5"><label>Civico</label><input id="f_civ" value="' + esc(p.civico) + '"></div></div>' +
     '<div class="row"><div style="flex:.6"><label>CAP</label><input id="f_cap" value="' + esc(p.cap) + '" inputmode="numeric"></div><div><label>Città</label><input id="f_com" value="' + esc(p.comune) + '"></div></div>' +
     '<div class="row"><div><label>Telefono (verifica che sia del destinatario)</label><input id="f_tel" value="' + esc(p.tel) + '" inputmode="tel"></div><div style="flex:.6"><label>COD €</label><input id="f_cod" value="' + esc(p.cod) + '"></div></div>' +
     '<label>Tipo</label><select id="f_tipo"><option value="consegna"' + (p.tipo === 'consegna' ? ' selected' : '') + '>Consegna</option><option value="ritiro"' + (p.tipo === 'ritiro' ? ' selected' : '') + '>Ritiro</option></select>' +
@@ -738,7 +795,11 @@ function parcelForm(p, onOk, isNew) {
     (a && a.lat != null ? '<div class="tag" style="margin-top:6px">posizione già nel database</div>' : '') +
     '<div class="row"><button class="btn sec" id="f_c">Annulla</button><button class="btn ok" id="f_o">OK</button></div>', () => { if (typeof p._cancel === 'function') p._cancel(); });
   let ok = false;
-  $('#f_via').addEventListener('change', () => { /* suggerimenti dal database */ });
+  $('#f_via').addEventListener('change', () => { /* se è la stessa via scritta diversa (spazi), uso il nome già nel database */
+    const v = $('#f_via').value.trim(), k = sqStreet(v); if (!k) return;
+    const hit = knownStreets().find(e => sqStreet(e.via) === k && e.via !== v && normCom(e.com) === normCom($('#f_com').value));
+    if (hit) { $('#f_via').value = hit.via; toast('Via già nota: ' + hit.via, 2500); }
+  });
   $('#f_c').onclick = () => { closeSheet(); };
   $('#f_o').onclick = () => {
     const q = { name: $('#f_name').value.trim(), via: $('#f_via').value.trim(), civico: $('#f_civ').value.trim(), cap: $('#f_cap').value.trim(), comune: $('#f_com').value.trim(), tel: $('#f_tel').value.trim(), cod: $('#f_cod').value.trim(), tipo: $('#f_tipo').value };
