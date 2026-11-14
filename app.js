@@ -47,9 +47,9 @@ const DEFAULT_PRIO = [
   E(30, 'San Leucio del Sannio', 'san leucio', '', 'Via Roma', ['roma']),
   E(31, 'San Leucio del Sannio', 'san leucio', '', 'Via Vittorio Emanuele', ['vittorio emanuele']),
   E(32, 'San Leucio del Sannio', 'san leucio', '', 'Via Angelo Zamparelli, via Piano di Zona, via Tuoppo', ['zamparelli', 'piano di zona', 'tuoppo']),
-  E(33, 'San Leucio del Sannio', 'san leucio', '', 'Via prov 164, via Paparano, via Masserie', ['provinciale@164-164', 'paparano', 'masserie']),
+  E(33, 'San Leucio del Sannio', 'san leucio', '', 'Via prov 164, via Paparano, via Masserie', ['provinciale@164-164', 'paparano', 'masserie', 'casale maccabei']),
   E(34, 'San Leucio del Sannio', 'san leucio', '', 'Via Santa Maria 80 (carabinieri), via San Marcello', ['santa maria@80-80', 'san marcello']),
-  E(35, 'San Leucio del Sannio', 'san leucio', '', 'Via Maccabei, Taverna Rotola (zona industriale), Fondovalle Sabato', ['maccabei', 'taverna rotola', 'rotola', 'fondovalle sabato']),
+  E(35, 'San Leucio del Sannio', 'san leucio', '', 'Via Maccabei, Taverna Rotola (zona industriale), Fondovalle Sabato', ['maccabei', 'taverna rotola', 'rotola', '*fondovalle sabato']),
   E(36, 'San Leucio del Sannio', 'san leucio', '', 'Via Sauco', ['sauco']),
   E(37, 'San Leucio del Sannio', 'san leucio', '', 'Via Santa Maria numeri alti', ['santa maria@60-9999']),
   E(38, 'San Leucio del Sannio', 'san leucio', '', 'Via Vigne, via Merici', ['vigne', 'merici']),
@@ -125,11 +125,11 @@ function normStreet(s) {
 }
 const KNOWN_COM = ['ceppaloni', 'apollosa', 'arpaise', 'san leucio', 'roccabascerana', 'pannarano', 'bucciano', 'sant angelo a cupolo', 'montesarchio'];
 function normCom(c) {
-  const n = norm(c); const m = n.match(/^.+? di (.+)$/);
+  const n = norm(c).replace(/ campania$/, ''); const m = n.match(/^.+? di (.+)$/);
   if (m && KNOWN_COM.some(k => m[1].startsWith(k))) return m[1];
   return n;
 }
-function locOf(c) { const n = norm(c); if (/^beltiglio/.test(n)) return 'bt'; if (/^san giovanni di ceppaloni/.test(n)) return 'sg'; return ''; }
+function locOf(c, cap) { const n = norm(c); if (/^beltiglio/.test(n)) return 'bt'; if (/^san giovanni di ceppaloni/.test(n)) return 'sg'; if (/^ceppaloni/.test(n) && String(cap || '').trim() === '82010') return 'sgbt'; return ''; }
 function baseComune(c) { const n = normCom(c); return n.replace(/\b\w/g, x => x.toUpperCase()); }
 function akey(via, civ, com) { return normStreet(via) + '|' + norm(civ) + '|' + normCom(com); }
 const akeyP = p => akey(p.via, p.civico, p.comune);
@@ -138,15 +138,16 @@ const akeyP = p => akey(p.via, p.civico, p.comune);
 function matchPrio0(p) {
   const a = DB.addr[akeyP(p)];
   if (a && a.prio) return { n: +a.prio, amb: false };
-  const st = normStreet(p.via), civ = parseInt(p.civico, 10), com = normCom(p.comune), loc = locOf(p.comune);
+  const st = normStreet(p.via), civ = parseInt(p.civico, 10), com = normCom(p.comune), loc = locOf(p.comune, p.cap);
   if (!st) return { n: 0, amb: false };
   const padded = ' ' + st + ' ';
   let best = [], bs = 0;
   for (const e of DB.prio) {
-    if (e.com && !com.startsWith(e.com)) continue;
-    if (loc && e.loc && e.loc !== loc && e.loc !== '') continue;
+    const comOk = !e.com || com.startsWith(e.com);
+    if (comOk && loc && e.loc && e.loc !== '' && (loc === 'sgbt' ? (e.loc !== 'sg' && e.loc !== 'bt') : e.loc !== loc)) continue;
     for (const raw of (e.keys || [])) {
-      const [kk, r] = String(raw).split('@'); const k = normStreet(kk);
+      const star = String(raw).startsWith('*'); if (!comOk && !star) continue;
+      const [kk, r] = String(raw).replace(/^\*/, '').split('@'); const k = normStreet(kk);
       if (!k || !padded.includes(' ' + k + ' ')) continue;
       if (r) { const [lo, hi] = r.split('-').map(Number); if (!(civ >= lo && civ <= hi)) continue; }
       const score = k.length + (r ? 100 : 0);
@@ -154,7 +155,7 @@ function matchPrio0(p) {
     }
   }
   if (!best.length) return { n: 0, amb: false };
-  if (best.length > 1 && !loc) { const cp = best.filter(e => e.loc === 'cp'); if (cp.length) best = cp; }
+  if (best.length > 1 && (!loc || loc === 'sgbt')) { const pref = loc === 'sgbt' ? best.filter(e => e.loc === 'sg' || e.loc === 'bt') : best.filter(e => e.loc === 'cp'); if (pref.length) best = pref; }
   best.sort((x, y) => x.n - y.n);
   return { n: best[0].n, amb: best.length > 1 };
 }
@@ -579,6 +580,7 @@ async function searchPlaces(q, p) {
 const CC_FALLBACK = { 'ceppaloni': [41.0553, 14.7347], 'san leucio': [41.0647, 14.7519], 'apollosa': [41.085, 14.700] };
 function guessCenter(p) {
   const com = normCom(p.comune); const pts = [];
+  if (/^ceppaloni/.test(com) && String(p.cap || '').trim() === '82010') { const sb = [41.0462, 14.7407]; const known = Object.values(DB.addr).filter(a => a.lat != null && normCom(a.comune) === com && Math.abs(a.lat - sb[0]) < 0.02 && Math.abs(a.lng - sb[1]) < 0.02); if (!known.length) return sb; }
   for (const a of Object.values(DB.addr)) if (a.lat != null && normCom(a.comune) === com) pts.push([a.lat, a.lng]);
   for (const x of DAY.parcels) if (x.lat != null && x !== p && normCom(x.comune) === com) pts.push([x.lat, x.lng]);
   if (pts.length) return [pts.reduce((s, q) => s + q[0], 0) / pts.length, pts.reduce((s, q) => s + q[1], 0) / pts.length];
@@ -618,13 +620,18 @@ function lookupDB(p) {
     const pts = Object.values(DB.addr).filter(a => a.lat != null && normStreet(a.via) === st && normCom(a.comune) === com);
     return pts.length ? { lat: pts.reduce((x, a) => x + a.lat, 0) / pts.length, lng: pts.reduce((x, a) => x + a.lng, 0) / pts.length, geo: 'near' } : null;
   }
-  let best = null, bd = 1e9;
+  /* punti noti della stessa via con numero: se il civico cade tra due numeri noti lo interpolo, altrimenti uso il più vicino */
+  const kn = [];
   for (const a of Object.values(DB.addr)) {
     if (a.lat == null || normStreet(a.via) !== st || normCom(a.comune) !== com) continue;
-    const c = parseInt(a.civico, 10); if (!isFinite(c)) continue;
-    const d = Math.abs(c - civ); if (d < bd) { bd = d; best = a; }
+    const c = parseInt(a.civico, 10); if (isFinite(c)) kn.push({ c, lat: a.lat, lng: a.lng });
   }
-  return best ? { lat: best.lat, lng: best.lng, geo: 'near' } : null;
+  if (!kn.length) return null;
+  kn.sort((x, y) => x.c - y.c);
+  const lo = kn.filter(k => k.c <= civ).pop(), hi = kn.find(k => k.c >= civ);
+  if (lo && hi && lo.c !== hi.c) { const t = (civ - lo.c) / (hi.c - lo.c); return { lat: lo.lat + (hi.lat - lo.lat) * t, lng: lo.lng + (hi.lng - lo.lng) * t, geo: 'near' }; }
+  const best = kn.reduce((m, k) => Math.abs(k.c - civ) < Math.abs(m.c - civ) ? k : m);
+  return { lat: best.lat, lng: best.lng, geo: 'near' };
 }
 async function elabora() {
   const ps = DAY.parcels; let n = 0, tot = ps.filter(p => p.lat == null).length;
