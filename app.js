@@ -830,6 +830,8 @@ $('#bManual').onclick = () => parcelForm(newParcel({}), () => toast('Aggiunto'),
 /* ---------- scanner ---------- */
 let scanStart = 0, scanN = 0, torchOn = false, oneD = {};
 let stream = null, scanTimer = null, fast = false, scanning = false, detector = null, lastCode = '', lastTime = 0;
+/* è l'indirizzo SDA solo se ha i campi separati da '|' e un CAP a 5 cifre: QR interni e codici a barre vengono ignorati */
+function isAddr(t) { const f = String(t || '').split('|'); return f.length >= 6 && f.some((x, i) => i >= 2 && /^\s*\d{5}\s*$/.test(x)); }
 function parsePayload(txt) {
   const f = String(txt).split('|').map(s => s.trim());
   const d = { track: f[0] || '', name: '', via: '', civico: '', cap: '', comune: '', prov: '', tel: '', cod: '', tipo: 'consegna' };
@@ -874,7 +876,7 @@ function zxInit() {
 }
 const ZX_BASE = { formats: ['DataMatrix', 'Code128', 'QRCode'], tryHarder: true, tryRotate: true, tryInvert: true, tryDownscale: true, maxNumberOfSymbols: 4 };
 async function zxRun(img, extra) {
-  try { const r = await ZXingWASM.readBarcodes(img, Object.assign({}, ZX_BASE, extra || {})); if (r.length) return r.map(z => z.text).sort((a, b) => ((b.includes('|') ? 1000 : 0) + b.length) - ((a.includes('|') ? 1000 : 0) + a.length))[0]; } catch (e) { window.zxErr = String(e && e.message || e).slice(0, 60); }
+  try { const r = await ZXingWASM.readBarcodes(img, Object.assign({}, ZX_BASE, extra || {})); if (r.length) return r.map(z => z.text).sort((a, b) => ((isAddr(b) ? 1000 : 0) + b.length) - ((isAddr(a) ? 1000 : 0) + a.length))[0]; } catch (e) { window.zxErr = String(e && e.message || e).slice(0, 60); }
   return null;
 }
 /* ritaglio (sx,sy,sw,sh) della sorgente, scalato in modo che il lato lungo sia maxSide (ingrandisce anche, fino a 'up' volte) */
@@ -917,11 +919,11 @@ function decodePasses(w, h) {
 let passIdx = 0;
 async function decodeSource(src, w, h, full) {
   let fb = null;
-  if (detector) { try { const r = await detector.detect(src); if (r.length) { const t = r.map(z => z.rawValue).sort((a, b) => ((b.includes('|') ? 1000 : 0) + b.length) - ((a.includes('|') ? 1000 : 0) + a.length))[0]; if (t.includes('|')) return t; fb = t; } } catch (e) { } }
+  if (detector) { try { const r = await detector.detect(src); if (r.length) { const t = r.map(z => z.rawValue).sort((a, b) => ((isAddr(b) ? 1000 : 0) + b.length) - ((isAddr(a) ? 1000 : 0) + a.length))[0]; if (isAddr(t)) return t; fb = t; } } catch (e) { } }
   zxInit(); if (typeof ZXingWASM === 'undefined') return fb;
   const P = decodePasses(w, h);
   /* cerco il Data Matrix con l'indirizzo (contiene '|'); un semplice codice a barre del tracking vale solo come ripiego */
-  const run = async list => { for (const f of list) { const t = await f(src); if (t) { if (t.includes('|')) return t; if (!fb || t.length > fb.length) fb = t; } } return null; };
+  const run = async list => { for (const f of list) { const t = await f(src); if (t) { if (isAddr(t)) return t; if (!fb || t.length > fb.length) fb = t; } } return null; };
   if (full) { return (await run(P)) || fb; }
   passIdx = (passIdx + 1) % (P.length - 2);
   const q = await run([P[0], P[1], P[2 + passIdx]]); if (q) return q;
@@ -950,9 +952,9 @@ function loopScan() {
   if (!scanning) return;
   const v = $('#cam');
   if (v.videoWidth) {
-    decodeSource(v, v.videoWidth, v.videoHeight).then(t => { scanN++; scanDbg(); if (!t || !scanning) return; if (t.includes('|')) { oneD = {}; onCode(t); } else { oneD[t] = (oneD[t] || 0) + 1; $('#scanmsg').textContent = 'Letto il tracking ' + t + ' – cerco l\'indirizzo (Data Matrix)…';
-      if (oneD[t] >= 2 && !shooting && Date.now() - lastShot > 5000) { $('#scanmsg').textContent = 'Etichetta vista: scatto una foto ad alta risoluzione…'; hiResShot().then(h => { if (h && scanning) { oneD = {}; onCode(h); } }); }
-      if (oneD[t] >= 6 && !shooting) { oneD = {}; onCode(t); } } }).catch(e => { window.zxErr = String(e && e.message || e).slice(0, 60); }).finally(() => { if (scanning) scanTimer = setTimeout(loopScan, 150); });
+    decodeSource(v, v.videoWidth, v.videoHeight).then(t => { scanN++; scanDbg(); if (!t || !scanning) return; if (isAddr(t)) { oneD = {}; onCode(t); } else { oneD[t] = (oneD[t] || 0) + 1;
+      const n = oneD[t]; $('#scanmsg').textContent = n >= 8 ? 'Vedo solo il codice a barre/QR (senza indirizzo): avvicinati al quadrato Data Matrix, tienilo fermo e a fuoco' : 'Letto il tracking ' + t + ' – cerco il Data Matrix con l\'indirizzo…';
+      if (n >= 2 && !shooting && Date.now() - lastShot > 4000) { $('#scanmsg').textContent = 'Etichetta vista: scatto una foto ad alta risoluzione…'; hiResShot().then(h => { if (h && scanning && isAddr(h)) { oneD = {}; onCode(h); } }); } } }).catch(e => { window.zxErr = String(e && e.message || e).slice(0, 60); }).finally(() => { if (scanning) scanTimer = setTimeout(loopScan, 150); });
   } else scanTimer = setTimeout(loopScan, 250);
 }
 function onCode(txt) {
@@ -981,7 +983,7 @@ const photoHandler = async ev => {
   try {
     const bmp = await createImageBitmap(f); const t = await decodeSource(bmp, bmp.width, bmp.height, true); busy();
     if (curView === 'scan') await startCam();
-    if (t) onCode(t); else toast('Codice non leggibile: rifai la foto più da vicino e a fuoco, oppure usa "+ A mano"', 4500);
+    if (t && isAddr(t)) onCode(t); else if (t) toast('Ho letto solo un codice a barre/QR senza indirizzo: rifai la foto più vicina al quadrato Data Matrix', 4500); else toast('Codice non leggibile: rifai la foto più da vicino e a fuoco, oppure usa "+ A mano"', 4500);
   } catch (e) { busy(); toast('Foto non leggibile'); if (curView === 'scan') startCam(); }
 };
 $('#fPhoto').onchange = photoHandler; $('#fShot').onchange = photoHandler;
