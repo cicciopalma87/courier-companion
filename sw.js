@@ -1,4 +1,4 @@
-const V='sda-v17', TILES='tiles-v1';
+const V='sda-v18', TILES='tiles-v1';
 const SHELL=['./','./index.html','./app.js','./manifest.webmanifest','./icon-192.png','./icon-512.png','./lib/leaflet.js','./lib/leaflet.css','./lib/xlsx.full.min.js','./lib/zxing-wasm-reader.js','./lib/zxing_reader.wasm','./lib/images/marker-icon.png','./lib/images/layers.png'];
 self.addEventListener('install',e=>{e.waitUntil(caches.open(V).then(c=>c.addAll(SHELL)).then(()=>self.skipWaiting()));});
 self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==V&&k!==TILES).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});

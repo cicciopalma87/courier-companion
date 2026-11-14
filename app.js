@@ -614,7 +614,10 @@ function lookupDB(p) {
   const exact = DB.addr[akeyP(p)];
   if (exact && exact.lat != null) return { lat: exact.lat, lng: exact.lng, geo: 'db' };
   const st = normStreet(p.via), com = normCom(p.comune), civ = parseInt(p.civico, 10);
-  if (!isFinite(civ)) return null;
+  if (!isFinite(civ)) { /* senza numero (snc): centro dei punti già noti di quella via */
+    const pts = Object.values(DB.addr).filter(a => a.lat != null && normStreet(a.via) === st && normCom(a.comune) === com);
+    return pts.length ? { lat: pts.reduce((x, a) => x + a.lat, 0) / pts.length, lng: pts.reduce((x, a) => x + a.lng, 0) / pts.length, geo: 'near' } : null;
+  }
   let best = null, bd = 1e9;
   for (const a of Object.values(DB.addr)) {
     if (a.lat == null || normStreet(a.via) !== st || normCom(a.comune) !== com) continue;
