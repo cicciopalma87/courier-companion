@@ -135,7 +135,7 @@ function akey(via, civ, com) { return normStreet(via) + '|' + norm(civ) + '|' + 
 const akeyP = p => akey(p.via, p.civico, p.comune);
 
 /* ---------- priorità: abbinamento ---------- */
-function matchPrio(p) {
+function matchPrio0(p) {
   const a = DB.addr[akeyP(p)];
   if (a && a.prio) return { n: +a.prio, amb: false };
   const st = normStreet(p.via), civ = parseInt(p.civico, 10), com = normCom(p.comune), loc = locOf(p.comune);
@@ -157,6 +157,20 @@ function matchPrio(p) {
   if (best.length > 1 && !loc) { const cp = best.filter(e => e.loc === 'cp'); if (cp.length) best = cp; }
   best.sort((x, y) => x.n - y.n);
   return { n: best[0].n, amb: best.length > 1 };
+}
+
+
+/* se la via non è nel foglio: stessa via degli altri pacchi, altrimenti la priorità mediana del paese (segnata con ?) */
+function estPrio(p) {
+  const st = normStreet(p.via), com = normCom(p.comune);
+  const same = DAY.parcels.filter(q => q !== p && q.prio && !q.amb && normCom(q.comune) === com && st && normStreet(q.via) === st).map(q => q.prio);
+  if (same.length) return Math.min(...same);
+  const ns = DB.prio.filter(e => e.com && com && com.startsWith(e.com)).map(e => e.n).sort((a, b) => a - b);
+  return ns.length ? ns[Math.floor(ns.length / 2)] : 0;
+}
+function matchPrio(p) {
+  const m = matchPrio0(p); if (m.n) return m;
+  const e = estPrio(p); return e ? { n: e, amb: true } : m;
 }
 
 /* ---------- utilità interfaccia ---------- */
@@ -182,12 +196,12 @@ function xlsxBlob(wb) { const out = XLSX.write(wb, { bookType: 'xlsx', type: 'ar
 
 /* ---------- database: righe <-> xlsx ---------- */
 function addrRows() {
-  return Object.entries(DB.addr).map(([k, a]) => ({ chiave: k, via: a.via, civico: a.civico, cap: a.cap || '', comune: a.comune, lat: a.lat, lng: a.lng, note: a.note || '', priorita: a.prio || '', modificato: a.mod || '' }));
+  return Object.entries(DB.addr).map(([k, a]) => ({ chiave: k, via: a.via, civico: a.civico, cap: a.cap || '', comune: a.comune, lat: a.lat, lng: a.lng, note: a.note || '', nomi: (a.nomi || []).join('; '), priorita: a.prio || '', modificato: a.mod || '' }));
 }
 function prioRows() { return DB.prio.map(e => ({ n: e.n, zona: e.zona, comune: e.com, sottozona: e.loc, descrizione: e.testo, chiavi: (e.keys || []).join('; ') })); }
 function dbWorkbook() {
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(addrRows(), { header: ['chiave', 'via', 'civico', 'cap', 'comune', 'lat', 'lng', 'note', 'priorita', 'modificato'] }), 'Indirizzi');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(addrRows(), { header: ['chiave', 'via', 'civico', 'cap', 'comune', 'lat', 'lng', 'note', 'nomi', 'priorita', 'modificato'] }), 'Indirizzi');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(prioRows(), { header: ['n', 'zona', 'comune', 'sottozona', 'descrizione', 'chiavi'] }), 'Priorità');
   return wb;
 }
@@ -197,7 +211,7 @@ function mergeAddrRows(rows) {
     const via = String(r.via || '').trim(); if (!via) continue;
     const lat = parseFloat(String(r.lat).replace(',', '.')), lng = parseFloat(String(r.lng).replace(',', '.'));
     const key = akey(via, r.civico, r.comune);
-    const inc = { via, civico: String(r.civico == null ? '' : r.civico), cap: String(r.cap || ''), comune: String(r.comune || ''), lat: isFinite(lat) ? lat : null, lng: isFinite(lng) ? lng : null, note: String(r.note || ''), prio: r.priorita ? +r.priorita : 0, mod: String(r.modificato || '') };
+    const inc = { via, civico: String(r.civico == null ? '' : r.civico), cap: String(r.cap || ''), comune: String(r.comune || ''), lat: isFinite(lat) ? lat : null, lng: isFinite(lng) ? lng : null, note: String(r.note || ''), prio: r.priorita ? +r.priorita : 0, nomi: String(r.nomi || '').split(';').map(x => x.trim()).filter(Boolean), mod: String(r.modificato || '') };
     const cur = DB.addr[key];
     if (!cur || (inc.mod || '') >= (cur.mod || '')) { DB.addr[key] = inc; n++; }
   }
@@ -222,6 +236,15 @@ function snapshot() {
   SNAPS.push({ name: 'data-' + t + '-' + pad(nn, 3) + '.temp.xlsx', t: nowIso(), addr: mod.map(([k, a]) => a) });
   if (SNAPS.length > 40) SNAPS.splice(0, SNAPS.length - 40);
   saveSnaps(); touch();
+}
+/* archivio: ricordo il destinatario insieme all'indirizzo (solo sul tuo telefono e nel file che esporti) */
+function archiveParcel(p) {
+  if (!p || !p.via) return;
+  const key = akeyP(p); const cur = DB.addr[key] || { via: p.via, civico: p.civico, cap: p.cap, comune: p.comune, lat: p.lat != null ? p.lat : null, lng: p.lng != null ? p.lng : null, note: '', prio: 0 };
+  if (cur.lat == null && p.lat != null && (p.geo === 'pin' || p.geo === 'db')) { cur.lat = p.lat; cur.lng = p.lng; }
+  const nm = String(p.name || '').trim();
+  if (nm) { const l = cur.nomi || []; if (!l.some(x => norm(x) === norm(nm))) { l.push(nm); cur.nomi = l.slice(-6); cur.mod = nowIso(); } }
+  DB.addr[key] = cur; saveDB();
 }
 function saveAddr(p, patch) {
   const key = akeyP(p); const cur = DB.addr[key] || { via: p.via, civico: p.civico, cap: p.cap, comune: p.comune, lat: null, lng: null, note: '', prio: 0 };
@@ -271,15 +294,24 @@ function ensureOrder() {
   have.forEach((p, i) => { p.ord = i + 1; });
 }
 /* ordine automatico: per priorità del foglio; a parità, catena del più vicino partendo dalla tua posizione */
+/* posizione "di ordinamento" anche per i pacchi senza pin: stessa via, oppure baricentro del paese */
+function sortPos(p) {
+  if (p.lat != null) return p;
+  const st = normStreet(p.via), com = normCom(p.comune);
+  const pts = DAY.parcels.filter(q => q.lat != null && normCom(q.comune) === com && (!st || normStreet(q.via) === st));
+  const pool = pts.length ? pts : DAY.parcels.filter(q => q.lat != null && normCom(q.comune) === com);
+  if (!pool.length) return null;
+  return { lat: pool.reduce((a, q) => a + q.lat, 0) / pool.length, lng: pool.reduce((a, q) => a + q.lng, 0) / pool.length };
+}
 function autoOrder() {
   let cur = meMarker ? meMarker.getLatLng() : null; const by = {};
   DAY.parcels.forEach(p => (by[p.prio || 999] = by[p.prio || 999] || []).push(p));
   const seq = [];
   for (const k of Object.keys(by).map(Number).sort((a, b) => a - b)) {
-    const pool = by[k].filter(p => p.lat != null).sort(cmpAddr), noLL = by[k].filter(p => p.lat == null).sort(cmpAddr);
+    const pool = by[k].filter(p => sortPos(p)).sort(cmpAddr), noLL = by[k].filter(p => !sortPos(p)).sort(cmpAddr);
     while (pool.length) {
-      let bi = 0; if (cur) { let bd = 1e12; pool.forEach((p, i) => { const d = distM(cur, p); if (d < bd) { bd = d; bi = i; } }); }
-      const p = pool.splice(bi, 1)[0]; seq.push(p); cur = p;
+      let bi = 0; if (cur) { let bd = 1e12; pool.forEach((p, i) => { const d = distM(cur, sortPos(p)); if (d < bd) { bd = d; bi = i; } }); }
+      const p = pool.splice(bi, 1)[0]; seq.push(p); cur = sortPos(p);
     }
     seq.push(...noLL);
   }
@@ -288,7 +320,7 @@ function autoOrder() {
 function sortedParcels() { ensureOrder(); return DAY.parcels.slice().sort((a, b) => a.ord - b.ord); }
 function setStato(id, st) {
   const p = DAY.parcels.find(x => x.id === id); if (!p) return;
-  p.stato = st; p.t = nowIso();
+  p.stato = st; p.t = nowIso(); archiveParcel(p);
   if (st !== 'da_fare') DAY.doneSince = (DAY.doneSince || 0) + 1;
   touch(); renderPins(); counters(); checkRemind();
 }
@@ -725,6 +757,7 @@ function addMenu() {
 $('#bManual').onclick = () => parcelForm(newParcel({}), () => toast('Aggiunto'), true);
 
 /* ---------- scanner ---------- */
+let scanStart = 0, scanN = 0, torchOn = false, oneD = {};
 let stream = null, scanTimer = null, fast = false, scanning = false, detector = null, lastCode = '', lastTime = 0;
 function parsePayload(txt) {
   const f = String(txt).split('|').map(s => s.trim());
@@ -752,7 +785,13 @@ async function startCam() {
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
     const v = $('#cam'); v.srcObject = stream; await v.play();
     if ('BarcodeDetector' in window) { try { const fm = await BarcodeDetector.getSupportedFormats(); if (fm.includes('data_matrix')) detector = new BarcodeDetector({ formats: ['data_matrix', 'code_128', 'qr_code'] }); } catch (e) { } }
-    msg.textContent = 'Inquadra il Data Matrix dell\'etichetta'; scanning = true; loopScan();
+    try {
+      const tr = stream.getVideoTracks()[0], caps = tr.getCapabilities ? tr.getCapabilities() : {};
+      if (caps.focusMode && caps.focusMode.includes('continuous')) await tr.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+      $('#bTorch').style.display = caps.torch ? '' : 'none';
+    } catch (e) { }
+    scanStart = Date.now(); scanN = 0;
+    msg.textContent = 'Inquadra il Data Matrix dell\'etichetta (15–25 cm, senza riflessi)'; scanning = true; loopScan();
   } catch (e) { msg.textContent = 'Fotocamera non disponibile (permesso negato?). Usa "Da foto" o "+ A mano".'; }
 }
 function stopCam() { scanning = false; clearTimeout(scanTimer); if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } }
@@ -762,25 +801,87 @@ function zxInit() {
   zxReady = true;
   try { ZXingWASM.prepareZXingModule({ overrides: { locateFile: (f, pre) => f.endsWith('.wasm') ? 'lib/zxing_reader.wasm' : pre + f }, fireImmediately: true }); } catch (e) { }
 }
-async function wasmDecode(src, w, h, maxSide) {
-  zxInit(); if (typeof ZXingWASM === 'undefined') return null;
-  const sc = Math.min(1, maxSide / Math.max(w, h)); const c = document.createElement('canvas'); c.width = Math.round(w * sc); c.height = Math.round(h * sc);
-  const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(src, 0, 0, c.width, c.height);
-  try {
-    const r = await ZXingWASM.readBarcodes(x.getImageData(0, 0, c.width, c.height), { formats: ['DataMatrix', 'Code128', 'QRCode'], tryHarder: true, tryRotate: true, tryInvert: true, maxNumberOfSymbols: 4 });
-    if (r.length) return r.map(z => z.text).sort((a, b) => b.length - a.length)[0];
-  } catch (e) { }
+const ZX_BASE = { formats: ['DataMatrix', 'Code128', 'QRCode'], tryHarder: true, tryRotate: true, tryInvert: true, tryDownscale: true, maxNumberOfSymbols: 4 };
+async function zxRun(img, extra) {
+  try { const r = await ZXingWASM.readBarcodes(img, Object.assign({}, ZX_BASE, extra || {})); if (r.length) return r.map(z => z.text).sort((a, b) => ((b.includes('|') ? 1000 : 0) + b.length) - ((a.includes('|') ? 1000 : 0) + a.length))[0]; } catch (e) { window.zxErr = String(e && e.message || e).slice(0, 60); }
   return null;
 }
-async function decodeSource(src, w, h) {
-  if (detector) { try { const r = await detector.detect(src); if (r.length) return r.map(z => z.rawValue).sort((a, b) => b.length - a.length)[0]; } catch (e) { } }
-  return (await wasmDecode(src, w, h, 1280)) || (await wasmDecode(src, w, h, 2200));
+/* ritaglio (sx,sy,sw,sh) della sorgente, scalato in modo che il lato lungo sia maxSide (ingrandisce anche, fino a 'up' volte) */
+function grab(src, sx, sy, sw, sh, maxSide, up, enhance) {
+  const sc = Math.min(up || 1, maxSide / Math.max(sw, sh)); const w = Math.max(8, Math.round(sw * sc)), h = Math.max(8, Math.round(sh * sc));
+  const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d', { willReadFrequently: true });
+  x.imageSmoothingQuality = 'high'; x.drawImage(src, sx, sy, sw, sh, 0, 0, w, h);
+  const id = x.getImageData(0, 0, w, h);
+  if (enhance) {
+    const d = id.data, n = w * h, hist = new Uint32Array(256);
+    for (let i = 0; i < n; i++) { const y = (d[i * 4] * 77 + d[i * 4 + 1] * 150 + d[i * 4 + 2] * 29) >> 8; d[i * 4] = y; hist[y]++; }
+    let lo = 0, hi = 255, acc = 0; while (lo < 254 && (acc += hist[lo]) < n * 0.02) lo++; acc = 0; while (hi > lo + 1 && (acc += hist[hi]) < n * 0.02) hi--;
+    const k = 255 / Math.max(1, hi - lo);
+    const g = new Uint8ClampedArray(n); for (let i = 0; i < n; i++) g[i] = (d[i * 4] - lo) * k;
+    const o = new Uint8ClampedArray(n); /* nitidezza 3x3 */
+    for (let yy = 1; yy < h - 1; yy++) for (let xx = 1; xx < w - 1; xx++) { const i = yy * w + xx; o[i] = 5 * g[i] - g[i - 1] - g[i + 1] - g[i - w] - g[i + w]; }
+    for (let i = 0; i < n; i++) { const v = o[i] || g[i]; d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v; d[i * 4 + 3] = 255; }
+  }
+  return id;
+}
+/* tentativi, dal più veloce al più pesante */
+function decodePasses(w, h) {
+  const P = [
+    s => zxRun(grab(s, 0, 0, w, h, 1280, 1)),
+    s => zxRun(grab(s, 0, 0, w, h, 2200, 1)),
+    s => zxRun(grab(s, 0, 0, w, h, 1920, 1, true)),
+    s => zxRun(grab(s, w * 0.2, h * 0.2, w * 0.6, h * 0.6, 1600, 2.5)),
+    s => zxRun(grab(s, w * 0.2, h * 0.2, w * 0.6, h * 0.6, 1600, 2.5, true), { binarizer: 'GlobalHistogram' }),
+    s => zxRun(grab(s, 0, 0, w, h, 3000, 1), { binarizer: 'FixedThreshold' }),
+    s => zxRun(grab(s, 0, 0, w, h, 800, 1)),
+    s => zxRun(grab(s, 0, 0, w, h, 560, 1)),
+    s => zxRun(grab(s, 0, 0, w, h, 960, 1, true), { binarizer: 'GlobalHistogram' }),
+    s => zxRun(grab(s, w * 0.25, h * 0.25, w * 0.5, h * 0.5, 1400, 3, true)),
+    s => zxRun(grab(s, w * 0.15, h * 0.15, w * 0.7, h * 0.7, 1000, 1.4, true), { binarizer: 'FixedThreshold' })
+  ];
+  /* finestre 3x3 sovrapposte */
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) { const sx = w * c * 0.25, sy = h * r * 0.25; P.push(s => zxRun(grab(s, sx, sy, w * 0.5, h * 0.5, 1400, 2, r === 1))); }
+  return P;
+}
+let passIdx = 0;
+async function decodeSource(src, w, h, full) {
+  let fb = null;
+  if (detector) { try { const r = await detector.detect(src); if (r.length) { const t = r.map(z => z.rawValue).sort((a, b) => ((b.includes('|') ? 1000 : 0) + b.length) - ((a.includes('|') ? 1000 : 0) + a.length))[0]; if (t.includes('|')) return t; fb = t; } } catch (e) { } }
+  zxInit(); if (typeof ZXingWASM === 'undefined') return fb;
+  const P = decodePasses(w, h);
+  /* cerco il Data Matrix con l'indirizzo (contiene '|'); un semplice codice a barre del tracking vale solo come ripiego */
+  const run = async list => { for (const f of list) { const t = await f(src); if (t) { if (t.includes('|')) return t; if (!fb || t.length > fb.length) fb = t; } } return null; };
+  if (full) { return (await run(P)) || fb; }
+  passIdx = (passIdx + 1) % (P.length - 2);
+  const q = await run([P[0], P[1], P[2 + passIdx]]); if (q) return q;
+  if (fb) return (await run(P)) || fb; /* ho visto un codice a barre: c'è un'etichetta, cerco a fondo il Data Matrix */
+  return null;
+}
+window.decodeFrame = (src, w, h) => decodeSource(src, w, h, true);
+let shooting = false, lastShot = 0;
+async function hiResShot() {
+  if (!stream || typeof ImageCapture === 'undefined' || shooting) return null;
+  shooting = true; lastShot = Date.now();
+  try {
+    const ic = new ImageCapture(stream.getVideoTracks()[0]); const opt = {};
+    try { const c = await ic.getPhotoCapabilities(); if (c.imageWidth && c.imageWidth.max) opt.imageWidth = Math.min(c.imageWidth.max, 3264); } catch (e) { }
+    const blob = await ic.takePhoto(opt); const bmp = await createImageBitmap(blob);
+    const t = await decodeSource(bmp, bmp.width, bmp.height, true); if (bmp.close) bmp.close(); return t;
+  } catch (e) { window.zxErr = 'foto: ' + String(e && e.message || e).slice(0, 40); return null; }
+  finally { shooting = false; }
+}
+function scanDbg() {
+  const v = $('#cam'); const eng = (detector ? 'ML Kit+' : '') + (typeof ZXingWASM === 'undefined' ? 'ZXing NON caricato' : 'ZXing');
+  $('#scandbg').textContent = eng + ' · ' + (v.videoWidth || '?') + '×' + (v.videoHeight || '?') + ' · analisi ' + scanN + (window.zxErr ? ' · errore: ' + window.zxErr : '');
+  if (scanning && scanN > 8 && Date.now() - scanStart > 9000) $('#scanmsg').textContent = 'Non leggo il codice. Avvicina a 15–25 cm, togli i riflessi, prova la 🔦 oppure usa 📸 Scatta e leggi.';
 }
 function loopScan() {
   if (!scanning) return;
   const v = $('#cam');
   if (v.videoWidth) {
-    decodeSource(v, v.videoWidth, v.videoHeight).then(t => { if (t && scanning) onCode(t); }).finally(() => { if (scanning) scanTimer = setTimeout(loopScan, 250); });
+    decodeSource(v, v.videoWidth, v.videoHeight).then(t => { scanN++; scanDbg(); if (!t || !scanning) return; if (t.includes('|')) { oneD = {}; onCode(t); } else { oneD[t] = (oneD[t] || 0) + 1; $('#scanmsg').textContent = 'Letto il tracking ' + t + ' – cerco l\'indirizzo (Data Matrix)…';
+      if (oneD[t] >= 2 && !shooting && Date.now() - lastShot > 5000) { $('#scanmsg').textContent = 'Etichetta vista: scatto una foto ad alta risoluzione…'; hiResShot().then(h => { if (h && scanning) { oneD = {}; onCode(h); } }); }
+      if (oneD[t] >= 6 && !shooting) { oneD = {}; onCode(t); } } }).catch(e => { window.zxErr = String(e && e.message || e).slice(0, 60); }).finally(() => { if (scanning) scanTimer = setTimeout(loopScan, 150); });
   } else scanTimer = setTimeout(loopScan, 250);
 }
 function onCode(txt) {
@@ -800,12 +901,20 @@ function onCode(txt) {
 }
 $('#bFast').onclick = () => { fast = !fast; $('#bFast').textContent = 'Veloce: ' + (fast ? 'sì' : 'no'); };
 $('#bPhoto').onclick = () => $('#fPhoto').click();
-$('#fPhoto').onchange = async ev => {
-  const f = ev.target.files[0]; ev.target.value = ''; if (!f) return;
+$('#bShot').onclick = () => { shotPending = true; stopCam(); $('#fShot').click(); };
+$('#bTorch').onclick = async () => { try { torchOn = !torchOn; await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ torch: torchOn }] }); $('#bTorch').textContent = torchOn ? '🔦 on' : '🔦'; } catch (e) { toast('Torcia non disponibile'); } };
+let shotPending = false;
+const photoHandler = async ev => {
+  const f = ev.target.files[0]; ev.target.value = ''; shotPending = false; if (!f) { if (curView === 'scan') startCam(); return; }
   busy('Leggo la foto…');
-  try { const bmp = await createImageBitmap(f); const t = await decodeSource(bmp, bmp.width, bmp.height); busy(); if (t) onCode(t); else toast('Codice non leggibile: rifai la foto o usa "+ A mano"', 4000); }
-  catch (e) { busy(); toast('Foto non leggibile'); }
+  try {
+    const bmp = await createImageBitmap(f); const t = await decodeSource(bmp, bmp.width, bmp.height, true); busy();
+    if (curView === 'scan') await startCam();
+    if (t) onCode(t); else toast('Codice non leggibile: rifai la foto più da vicino e a fuoco, oppure usa "+ A mano"', 4500);
+  } catch (e) { busy(); toast('Foto non leggibile'); if (curView === 'scan') startCam(); }
 };
+$('#fPhoto').onchange = photoHandler; $('#fShot').onchange = photoHandler;
+window.addEventListener('focus', () => { if (shotPending) setTimeout(() => { if (shotPending && curView === 'scan' && !stream) { shotPending = false; startCam(); } }, 1500); });
 
 /* ---------- menu, import/export ---------- */
 function renderMenu() {

@@ -86,9 +86,9 @@ textarea{min-height:70px}
   <section class="view" id="v-scan">
     <video id="cam" playsinline muted></video><div id="frame"></div>
     <div id="scanui"><div id="scanmsg">Inquadra il Data Matrix dell'etichetta</div>
-      <div class="row"><button class="btn sec" id="bFast">Veloce: no</button><button class="btn sec" id="bPhoto">Da foto</button><button class="btn" id="bManual">+ A mano</button></div>
+      <div id="scandbg" style="font-size:11px;opacity:.7;text-align:center"></div><div class="row"><button class="btn" id="bShot">📸 Scatta e leggi</button><button class="btn sec" id="bTorch" style="display:none;flex:.35">🔦</button></div><div class="row"><button class="btn sec" id="bFast">Veloce: no</button><button class="btn sec" id="bPhoto">Da galleria</button><button class="btn sec" id="bManual">+ A mano</button></div>
     </div>
-    <input type="file" id="fPhoto" accept="image/*" hidden>
+    <input type="file" id="fPhoto" accept="image/*" hidden><input type="file" id="fShot" accept="image/*" capture="environment" hidden>
   </section>
   <section class="view" id="v-menu"></section>
 </main>
