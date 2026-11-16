@@ -1,6 +1,6 @@
 'use strict';
 /* Courier Companion – app corriere (PWA). Dati solo sul telefono, database in file .xlsx */
-const VER = '1.26';
+const VER = '1.27';
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pad = (n, l = 2) => String(n).padStart(l, '0');
@@ -1233,6 +1233,11 @@ async function toggleWake() {
   try { if (wake) { await wake.release(); wake = null; } else { wake = await navigator.wakeLock.request('screen'); } } catch (e) { toast('Non supportato su questo telefono'); }
   renderMenu();
 }
+/* schermo spento/app in background: fermo la camera; al ritorno la riavvio da sola */
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { if (curView === 'scan') stopCam(); }
+  else if (curView === 'scan' && !shotPending && !document.querySelector('#sheet.on, #sheet[style*="block"]')) setTimeout(() => { stopCam(); startCam(); }, 300);
+});
 document.addEventListener('visibilitychange', async () => { if (document.visibilityState === 'visible' && wake) { try { wake = await navigator.wakeLock.request('screen'); } catch (e) { } } });
 
 /* ---------- fine lavoro ---------- */
