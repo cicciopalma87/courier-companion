@@ -1,6 +1,6 @@
 'use strict';
 /* Courier Companion – app corriere (PWA). Dati solo sul telefono, database in file .xlsx */
-const VER = '1.25';
+const VER = '1.26';
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pad = (n, l = 2) => String(n).padStart(l, '0');
@@ -1244,10 +1244,10 @@ function fineLavoro() {
   $('#fo').onclick = () => {
     download('database-SDA-' + todayStr() + '.xlsx', xlsxBlob(dbWorkbook())); DAY.lastBackup = Date.now(); DAY.dirty = 0; DAY.doneSince = 0; saveDay();
     const list = SNAPS.map(s => '<div class="card" data-s="' + esc(s.name) + '"><div class="t" style="font-size:14px">' + esc(s.name) + '</div></div>').join('') || '<div class="s">Nessuna copia temporanea</div>';
-    sheet('<h3>Database salvato ✔</h3><p style="font-size:14px">Copie temporanee presenti sul telefono:</p><div style="max-height:30vh;overflow:auto">' + list + '</div><p><b>Vuoi cancellare la cache?</b><br><span style="font-size:13px;color:#51627d">Cancella copie temporanee, pacchi di oggi e database dal telefono. Controlla che il file sia in Download.</span></p><div class="row"><button class="btn sec" id="cn">No</button><button class="btn no" id="cs">Sì</button></div>');
+    sheet('<h3>Database salvato ✔</h3><p style="font-size:14px">Copie temporanee presenti sul telefono:</p><div style="max-height:30vh;overflow:auto">' + list + '</div><p><b>Vuoi cancellare le copie temporanee?</b><br><span style="font-size:13px;color:#51627d">Cancella le copie temporanee e i pacchi di oggi. Il database degli indirizzi resta sul telefono. Controlla comunque che il file sia in Download.</span></p><div class="row"><button class="btn sec" id="cn">No</button><button class="btn no" id="cs">Sì</button></div>');
     $('#sheet').querySelectorAll('[data-s]').forEach(c => c.onclick = () => { const s = SNAPS.find(x => x.name === c.dataset.s); if (!s) return; const keep = DB.addr; const tmp = {}; s.addr.forEach(a => tmp[akey(a.via, a.civico, a.comune)] = a); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(Object.entries(tmp).map(([k, a]) => ({ chiave: k, via: a.via, civico: a.civico, cap: a.cap || '', comune: a.comune, lat: a.lat, lng: a.lng, note: a.note || '', priorita: a.prio || '', modificato: a.mod || '' }))), 'Indirizzi'); download(s.name, xlsxBlob(wb)); });
     $('#cn').onclick = closeSheet;
-    $('#cs').onclick = () => { localStorage.removeItem(K.db); localStorage.removeItem(K.day); localStorage.removeItem(K.snaps); DB = { addr: {}, prio: JSON.parse(JSON.stringify(DEFAULT_PRIO)) }; DAY = { date: todayStr(), parcels: [], nextId: 1, lastBackup: 0, doneSince: 0, dirty: 0, snooze: 0 }; SNAPS = []; closeSheet(); renderPins(); counters(); renderMenu(); toast('Cache cancellata'); };
+    $('#cs').onclick = () => { localStorage.removeItem(K.day); localStorage.removeItem(K.snaps); DAY = { date: todayStr(), parcels: [], nextId: 1, lastBackup: 0, doneSince: 0, dirty: 0, snooze: 0 }; SNAPS = []; closeSheet(); renderPins(); counters(); renderMenu(); toast('Copie temporanee cancellate (database mantenuto)'); };
   };
 }
 
