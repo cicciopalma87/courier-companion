@@ -1,6 +1,6 @@
 'use strict';
 /* Courier Companion – app corriere (PWA). Dati solo sul telefono, database in file .xlsx */
-const VER = '1.0';
+const VER = '1.25';
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pad = (n, l = 2) => String(n).padStart(l, '0');
@@ -306,11 +306,19 @@ function counters() {
 
 /* ---------- ordine di consegna (numero progressivo mostrato sui pin) ---------- */
 function cmpAddr(a, b) { return normStreet(a.via).localeCompare(normStreet(b.via)) || ((parseInt(a.civico) || 0) - (parseInt(b.civico) || 0)); }
+/* priorità effettiva: se manca (es. ritiri, indirizzi fuori foglio) prendo quella del pacco più vicino/stessa via invece di mandarlo in fondo */
+function effPrio(p) {
+  if (p.prio) return p.prio;
+  const pos = sortPos(p); const pool = DAY.parcels.filter(q => q !== p && q.prio && sortPos(q));
+  if (!pos || !pool.length) return 999;
+  let b = pool[0], bd = 1e12; for (const q of pool) { const d = distM(pos, sortPos(q)); if (d < bd) { bd = d; b = q; } }
+  return b.prio;
+}
 function ensureOrder() {
   const ps = DAY.parcels; if (!ps.length) return;
   const have = ps.filter(p => p.ord > 0).sort((a, b) => a.ord - b.ord);
-  const fresh = ps.filter(p => !(p.ord > 0)).sort((a, b) => ((a.prio || 999) - (b.prio || 999)) || cmpAddr(a, b));
-  for (const p of fresh) { let i = have.findIndex(q => (q.prio || 999) > (p.prio || 999)); if (i < 0) i = have.length; have.splice(i, 0, p); }
+  const fresh = ps.filter(p => !(p.ord > 0)).sort((a, b) => (effPrio(a) - effPrio(b)) || cmpAddr(a, b));
+  for (const p of fresh) { const ep = effPrio(p); let i = have.findIndex(q => effPrio(q) > ep); if (i < 0) i = have.length; have.splice(i, 0, p); }
   have.forEach((p, i) => { p.ord = i + 1; });
 }
 /* ordine automatico: per priorità del foglio; a parità, catena del più vicino partendo dalla tua posizione */
@@ -325,7 +333,7 @@ function sortPos(p) {
 }
 function autoOrder() {
   let cur = meMarker ? meMarker.getLatLng() : null; const by = {};
-  DAY.parcels.forEach(p => (by[p.prio || 999] = by[p.prio || 999] || []).push(p));
+  DAY.parcels.forEach(p => { const k = effPrio(p); (by[k] = by[k] || []).push(p); });
   const seq = [];
   for (const k of Object.keys(by).map(Number).sort((a, b) => a - b)) {
     const pool = by[k].filter(p => sortPos(p)).sort(cmpAddr), noLL = by[k].filter(p => !sortPos(p)).sort(cmpAddr);
@@ -475,15 +483,26 @@ function prioPicker(p, ids) {
 
 /* ---------- sposta / posiziona pin ---------- */
 let moving = null;
+/* posizione vicina: archivio + pacchi di oggi sulla stessa via (civico più vicino) */
+function nearKnown(p) {
+  const f = lookupDB(p); const st = sqStreet(p.via), com = normCom(p.comune), civ = parseInt(p.civico, 10);
+  const pts = DAY.parcels.filter(q => q !== p && q.lat != null && st && sqStreet(q.via) === st && normCom(q.comune) === com);
+  if (f) { const r = pts.concat(Object.values(DB.addr).filter(a => a.lat != null && sqStreet(a.via) === st && normCom(a.comune) === com)); const b = r.sort((x, y) => Math.abs((parseInt(x.civico, 10) || 0) - civ) - Math.abs((parseInt(y.civico, 10) || 0) - civ))[0]; return { lat: f.lat, lng: f.lng, ref: b ? (b.via + ' ' + (b.civico || '')).trim() : p.via }; }
+  if (!pts.length) return null;
+  const b = pts.sort((x, y) => Math.abs((parseInt(x.civico, 10) || 0) - civ) - Math.abs((parseInt(y.civico, 10) || 0) - civ))[0];
+  return { lat: b.lat, lng: b.lng, ref: (b.via + ' ' + (b.civico || '')).trim() };
+}
 async function startMove(id) {
   const p = DAY.parcels.find(x => x.id === id); if (!p) return;
   showView('map');
   let start;
   if (p.lat != null) { start = [p.lat, p.lng]; map.setView(start, Math.max(map.getZoom(), 17)); }
   else {
-    let g = guessCenter(p); if (!g && navigator.onLine) { busy('Cerco ' + baseComune(p.comune) + '…'); g = await fetchComuneCenter(p); busy(); }
+    const nk = nearKnown(p);
+    if (nk) { start = [nk.lat, nk.lng]; map.setView(start, 18); toast('Posizione stimata vicino a ' + nk.ref + ': controlla e trascina il pin sul punto giusto', 6000); }
+    else { let g = guessCenter(p); if (!g && navigator.onLine) { busy('Cerco ' + baseComune(p.comune) + '…'); g = await fetchComuneCenter(p); busy(); }
     if (g) { start = g; map.setView(g, 16); toast('Indirizzo non trovato da solo: usa Cerca via… oppure trascina il pin', 5000); }
-    else start = [map.getCenter().lat, map.getCenter().lng];
+    else start = [map.getCenter().lat, map.getCenter().lng]; }
   }
   const m = L.marker(start, { draggable: true, icon: L.divIcon({ className: '', html: '<div class="pin st-x" style="width:36px;height:36px">⊕</div>', iconSize: [36, 36], iconAnchor: [18, 18] }), zIndexOffset: 2000 }).addTo(map);
   moving = { p, m };
@@ -757,7 +776,13 @@ function enableDrag(el) {
       };
       const up = () => {
         document.removeEventListener('pointermove', mv); document.removeEventListener('pointerup', up); document.removeEventListener('pointercancel', up); it.classList.remove('dragging');
-        [...list.querySelectorAll('.it')].forEach((x, i) => { const p = DAY.parcels.find(q => q.id === +x.dataset.id); if (p) p.ord = i + 1; });
+        const items = [...list.querySelectorAll('.it')]; items.forEach((x, i) => { const p = DAY.parcels.find(q => q.id === +x.dataset.id); if (p) p.ord = i + 1; });
+        const mi = items.indexOf(it), mp = DAY.parcels.find(q => q.id === +it.dataset.id);
+        if (mp && mp.via) { /* imparo: il pacco prende la priorità del vicino sopra (o sotto) e la ricordo per questo indirizzo */
+          const nb = [items[mi - 1], items[mi + 1]].map(x => x && DAY.parcels.find(q => q.id === +x.dataset.id)).filter(q => q && q.prio);
+          const np = nb[0] ? nb[0].prio : 0;
+          if (np && np !== mp.prio) { mp.prio = np; mp.amb = false; try { saveAddr(mp, { prio: np }); } catch (e) { } toast('Ricordo: ' + fmtAddr(mp) + ' = priorità ' + np, 2500); }
+        }
         DAY.manual = true; touch(); renderPins(); renderList();
       };
       document.addEventListener('pointermove', mv); document.addEventListener('pointerup', up); document.addEventListener('pointercancel', up);
@@ -1057,9 +1082,9 @@ async function ocrLabel(file) {
   busy('Preparo la lettura (la prima volta può scaricare ~8 MB)…');
   const bmp = await createImageBitmap(file); const w = await ocrWorker();
   const sk = skewAngle(bmp); window.lastSkew = sk;
-  const tries = [-sk, -sk + 180, -sk + 90, -sk + 270, -sk + 12, -sk - 12, -sk + 168, -sk + 192]; const found = [];
+  const tries = [-sk, -sk + 180, -sk + 90, -sk + 270]; const found = []; const t0 = Date.now();
   for (let i = 0; i < tries.length; i++) {
-    busy('Leggo l\'etichetta… ' + (i + 1) + '/' + tries.length);
+    busy('Leggo l\'etichetta… ' + (i + 1) + '/' + tries.length + ' (' + Math.round((Date.now() - t0) / 1000) + ' s)');
     const o = await w.recognize(rotCanvas(bmp, tries[i], 1800)); const sc = ocrScore(o.data.text, o.data.confidence); const dd = parseLabelText(o.data.text); window.lastOcr = o.data.text;
     found.push({ sc, dd });
     if (/destinat/i.test(o.data.text) && dd.via) break;
@@ -1079,7 +1104,7 @@ $('#fOcr').addEventListener('change', async ev => {
   try {
     const d = await ocrLabel(f); busy();
     if (curView === 'scan') await startCam();
-    if (d && (d.via || d.cap || d.name)) ocrToForm(d); else toast('Testo non riconosciuto: rifai la foto con l\'etichetta dritta, ben illuminata e a fuoco', 5000);
+    if (d && (d.via || d.cap || d.name)) ocrToForm(d); else toast('Testo non riconosciuto (letto: «' + String(window.lastOcr || '').replace(/\s+/g, ' ').slice(0, 70) + '»). Rifai la foto più vicina, dritta e a fuoco', 8000);
   } catch (e) { busy(); toast('Lettura testo non riuscita: ' + String(e && e.message || e).slice(0, 60) + (navigator.onLine ? '' : ' (la prima volta serve la rete)'), 5000); if (curView === 'scan') startCam(); }
 });
 $('#bFast').onclick = () => { fast = !fast; $('#bFast').textContent = 'Veloce: ' + (fast ? 'sì' : 'no'); };
@@ -1280,4 +1305,8 @@ window.addEventListener('online', netState); window.addEventListener('offline', 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => { });
 counters(); renderPins(); startGPS(); checkRemind();
+$('#ver').textContent = 'v' + VER;
+setTimeout(() => { try { if (navigator.onLine && !lsGet('sda.ocrReady', 0)) ocrWorker().then(() => { lsSet('sda.ocrReady', 1); ocrW.terminate(); ocrW = null; }).catch(() => { ocrW = null; }); } catch (e) { } }, 25000);
+try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { }
+if (!Object.keys(DB.addr).length) setTimeout(() => toast('⚠ Archivio indirizzi VUOTO: importa il tuo file database (Menu → Importa database) per riavere pin e suggerimenti', 12000), 1500);
 if (DAY.parcels.some(p => p.lat != null)) fitPins();
